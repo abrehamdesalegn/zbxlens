@@ -1,0 +1,82 @@
+# Example only — adjust image, secrets, and ingress for your cluster.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zbxlens
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: reporter-data
+  namespace: zbxlens
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reporter
+  namespace: zbxlens
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zbxlens
+  template:
+    metadata:
+      labels:
+        app: zbxlens
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: reporter
+          image: zbxlens:5.0.0
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: reporter-env
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /api/health/live
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: reporter-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reporter
+  namespace: zbxlens
+spec:
+  selector:
+    app: zbxlens
+  ports:
+    - port: 80
+      targetPort: 8000

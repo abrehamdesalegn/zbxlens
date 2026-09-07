@@ -1,0 +1,9 @@
+# Secrets & local runtime
+backend/.env
+backend/data/
+backend/venv/
+**/__pycache__/
+*.pyc
+.Python
+*.egg-info/
+.DS_Store

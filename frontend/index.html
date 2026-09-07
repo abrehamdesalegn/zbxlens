@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZbxLens</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="alternate icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/css/app.css?v=5.0.0n">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="mark">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 17L9 10L13 14L21 5" stroke="#E8A33D" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 5H15" stroke="#E8A33D" stroke-width="2" stroke-linecap="round"/><path d="M21 5V11" stroke="#E8A33D" stroke-width="2" stroke-linecap="round"/></svg>
+    </div>
+    <div>
+      <div class="eyebrow">Zabbix &middot; Metrics &amp; Problems</div>
+      <h1>ZbxLens</h1>
+    </div>
+  </div>
+  <div class="pulse-wrap">
+    <canvas id="pulse" width="140" height="28"></canvas>
+    <div class="live-dot" id="liveDot"><span class="dot"></span><span id="liveLabel">checking…</span></div>
+  </div>
+  <div class="user-badge" id="userBadge" style="display:none;"></div>
+</header>
+
+<main>
+
+  <div class="nav-tabs" id="navTabs">
+    <button type="button" class="active" data-nav="dashboards">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="3" width="8" height="5" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="10" width="8" height="11" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="13" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.8"/></svg>
+      Metrics
+    </button>
+    <button type="button" data-nav="problems">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Problems
+    </button>
+  </div>
+
+  <div id="dashboardsView"></div>
+  <div id="problemsView" style="display:none"></div>
+
+  <div class="modal-backdrop" id="loginModal">
+    <div class="modal">
+      <h3>Sign in with Zabbix</h3>
+      <p>Use your Zabbix username and password. What you can see and save here follows your Zabbix host-group permissions and role.</p>
+      <form id="loginForm">
+        <input type="text" id="loginUsername" placeholder="Username" autocomplete="username" autofocus>
+        <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
+        <div class="status-msg warn" id="loginError" style="display:none;margin-bottom:10px;"></div>
+        <div class="row">
+          <button type="submit" class="btn btn-primary" id="loginSubmit"><span class="spinner"></span><span class="btn-label">Sign in</span></button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop"></div>
+  <aside class="drawer" id="detailDrawer" aria-label="Details">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <h3 id="drawerTitle">Details</h3>
+      <button type="button" class="btn btn-ghost" id="drawerClose" style="height:32px;">Close</button>
+    </div>
+    <div id="drawerBody"></div>
+  </aside>
+
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+  <input type="file" id="importFileInput" accept="application/json" style="display:none">
+
+</main>
+
+<!--
+  Frontend modules (classic scripts, global scope — load order matters).
+  Zero-build: no bundler required. FastAPI serves these as static files.
+  Order: core → utils (shared helpers) → ui → dashboards → problems (boot).
+-->
+<script src="/js/core.js?v=5.0.0n"></script>
+<script src="/js/export.js?v=5.0.0n"></script>
+<script src="/js/utils.js?v=5.0.0n"></script>
+<script src="/js/ui.js?v=5.0.0n"></script>
+<script src="/js/dashboards.js?v=5.0.0n"></script>
+<script src="/js/problems.js?v=5.0.0n"></script>
+
+</body>
+</html>
