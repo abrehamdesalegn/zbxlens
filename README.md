@@ -133,7 +133,7 @@ mkdir -p backend/data
 docker compose up -d --build
 ```
 
-Open **http://localhost:8000** (or `http://<server-ip>:8000`).
+Open **http://<server-ip>:8000**.
 
 #### Option B — Python (development or bare metal)
 
@@ -149,7 +149,7 @@ mkdir -p data
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Open **http://localhost:8000**.
+Open **http://<server-ip>:8000**.
 
 For production (systemd, reverse proxy, TLS), see [docs/production.md](docs/production.md).
 
