@@ -6,12 +6,12 @@ import time
 from pathlib import Path
 from typing import Literal
 
-import pymysql
 from fastapi import APIRouter, HTTPException, Request, Query, Response
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response as FastResponse
 from pydantic import BaseModel, Field
 
 from .. import appdb, auth, zbx_api
+from ..db import db_operational_errors, DbError
 from ..config import (
     APP_VERSION, TZ_OFFSET_MINUTES, MAX_RAW_POINTS,
     SESSION_COOKIE_NAME, COOKIE_SECURE, SESSION_COOKIE_MAX_AGE_DAYS,
@@ -45,7 +45,7 @@ def health_live():
 
 @router.get("/api/health/ready")
 def health_ready():
-    """Readiness: Zabbix MySQL is reachable."""
+    """Readiness: Zabbix database is reachable."""
     try:
         queries.query("SELECT 1")
         return {"status": "ready", "db": "reachable", "version": APP_VERSION}
@@ -64,6 +64,7 @@ def health(request: Request):
     is_superadmin = bool(user and user.get("is_superadmin"))
 
     conn_info = {
+        "engine": dbmod.DB_ENGINE,
         "host": dbmod.DB_HOST,
         "port": dbmod.DB_PORT,
         "database": dbmod.DB_NAME,
@@ -72,15 +73,22 @@ def health(request: Request):
     try:
         t0 = _time.perf_counter()
         if is_superadmin:
-            row = queries.query(
-                "SELECT 1 AS ok, DATABASE() AS db_name, @@version AS server_version"
-            )
+            from ..db import is_postgresql
+            if is_postgresql():
+                row = queries.query(
+                    "SELECT 1 AS ok, current_database() AS db_name, version() AS server_version"
+                )
+            else:
+                row = queries.query(
+                    "SELECT 1 AS ok, DATABASE() AS db_name, @@version AS server_version"
+                )
         else:
             row = queries.query("SELECT 1 AS ok")
         latency_ms = round((_time.perf_counter() - t0) * 1000, 1)
         out = {
             "status": "ok",
             "db": "reachable",
+            "engine": dbmod.DB_ENGINE,
             "version": APP_VERSION,
             "latency_ms": latency_ms,
         }
@@ -96,7 +104,7 @@ def health(request: Request):
             out["server_version"] = server_version
             out.update(detail)
         return out
-    except pymysql.err.OperationalError as e:
+    except db_operational_errors() as e:
         detail = {"message": f"Database unreachable: {e}"}
         if is_superadmin:
             detail["connection"] = conn_info
@@ -143,10 +151,12 @@ def prometheus_metrics():
 @router.get("/api/config")
 def api_config():
     """Public config the frontend needs before a user has logged in."""
+    from ..db import DB_ENGINE
     return {
         "version": APP_VERSION,
         "tz_offset_minutes": TZ_OFFSET_MINUTES,
         "max_raw_points": MAX_RAW_POINTS,
+        "db_engine": DB_ENGINE,
     }
 
 

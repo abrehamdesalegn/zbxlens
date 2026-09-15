@@ -6,8 +6,17 @@ load_dotenv()
 
 APP_VERSION = os.environ.get("APP_VERSION", "5.0.0")
 
+# mysql | postgresql (aliases: postgres, pgsql, pg)
+_raw_engine = os.environ.get("DB_ENGINE", "mysql").strip().lower()
+if _raw_engine in ("postgres", "pgsql", "pg"):
+    _raw_engine = "postgresql"
+if _raw_engine not in ("mysql", "postgresql"):
+    raise ValueError(f"DB_ENGINE must be 'mysql' or 'postgresql', got {_raw_engine!r}")
+DB_ENGINE = _raw_engine
+
+_default_port = "5432" if DB_ENGINE == "postgresql" else "3306"
 DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")
-DB_PORT = int(os.environ.get("DB_PORT", "3306"))
+DB_PORT = int(os.environ.get("DB_PORT", _default_port))
 DB_USER = os.environ.get("DB_USER", "zbx_reporter")
 DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
 DB_NAME = os.environ.get("DB_NAME", "zabbix")

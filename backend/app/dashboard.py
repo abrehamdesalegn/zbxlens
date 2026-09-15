@@ -148,7 +148,7 @@ def build_dashboard(hostids, columns, date_from, date_to,
             row["cells"][col["id"]] = {
                 "values": scaled,
                 "source": kind,
-                "units": col.get("unit") or item.get("units") or "",
+                "units": ("" if col.get("raw") else (col.get("unit") or item.get("units") or "")),
             }
         rows.append(row)
 

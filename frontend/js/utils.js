@@ -325,24 +325,44 @@ function makeTableSortable(table){
       th.classList.add('sort-group');
       return;
     }
+    // Skip checkbox / empty control columns
+    if(th.querySelector('input[type=checkbox]') || th.classList.contains('no-sort')){
+      return;
+    }
     th.classList.add('sortable');
     th.setAttribute('title', 'Click to sort');
-    th.addEventListener('click', function(){
+    // Clean single caret label (no dual-dot grip icons)
+    th.setAttribute('data-sort-indicator', '1');
+    th.addEventListener('click', function(ev){
       const tbody = table.tBodies[0];
       if(!tbody) return;
       const colIdx = visualColIndex(th);
       if(isNaN(colIdx) || colIdx < 0) return;
       const rows = Array.prototype.slice.call(tbody.rows);
       const nextDir = th.dataset.sortDir === 'asc' ? 'desc' : 'asc';
+      const sortByDelta = !!(ev && (ev.altKey || ev.metaKey));
       clearSortState();
       th.dataset.sortDir = nextDir;
       th.setAttribute('aria-sort', nextDir === 'asc' ? 'ascending' : 'descending');
       th.classList.add('sort-active', nextDir === 'asc' ? 'sort-asc' : 'sort-desc');
+      if(sortByDelta) th.title = 'Sorted by delta (Alt+click)'; else th.title = 'Click to sort · Alt+click for delta';
 
       rows.sort(function(a, b){
-        // Prefer data-export-num for metric cells (numeric sort)
         const ca = a.cells[colIdx];
         const cb = b.cells[colIdx];
+        // Alt/Meta+click → sort by absolute point delta vs previous period
+        if(sortByDelta){
+          const dA = ca && ca.dataset && ca.dataset.delta;
+          const dB = cb && cb.dataset && cb.dataset.delta;
+          const an = dA != null && dA !== '' ? parseFloat(dA) : NaN;
+          const bn = dB != null && dB !== '' ? parseFloat(dB) : NaN;
+          if(!isNaN(an) || !isNaN(bn)){
+            const av = isNaN(an) ? (nextDir==='asc' ? Infinity : -Infinity) : an;
+            const bv = isNaN(bn) ? (nextDir==='asc' ? Infinity : -Infinity) : bn;
+            return nextDir === 'asc' ? (av - bv) : (bv - av);
+          }
+        }
+        // Prefer data-export-num for metric cells (numeric sort)
         const numA = ca && ca.dataset && ca.dataset.exportNum;
         const numB = cb && cb.dataset && cb.dataset.exportNum;
         if(numA != null && numA !== '' && numB != null && numB !== ''){
@@ -431,6 +451,14 @@ function closeDrawer(){
     try{ window._ddChartEscCleanup(); }catch(_){}
     window._ddChartEscCleanup = null;
   }
+  if(window._hostDetailKeyHandler){
+    document.removeEventListener('keydown', window._hostDetailKeyHandler);
+    window._hostDetailKeyHandler = null;
+  }
+  if(window._hostDetailResizeHandler){
+    window.removeEventListener('resize', window._hostDetailResizeHandler);
+    window._hostDetailResizeHandler = null;
+  }
 }
 
 function highlightExtremes(table){
@@ -453,17 +481,28 @@ function highlightExtremes(table){
   }
 }
 
-function sparklineSvg(values, w, h, thresholds){
-  w = w || 260; h = h || 48;
+function sparklineSvg(values, w, h, thresholds, scaleOpts){
+  w = w || 80; h = h || 22;
+  scaleOpts = scaleOpts || {};
   const nums = (values||[]).filter(function(v){ return typeof v === 'number' && !isNaN(v); });
-  if(nums.length < 2) return '<svg width="'+w+'" height="'+h+'"></svg>';
-  const min = Math.min.apply(null, nums), max = Math.max.apply(null, nums);
+  if(nums.length < 2) return '<svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"></svg>';
+  // Fixed scale (e.g. 0–100 for %) locks the Y axis so small swings are not exaggerated
+  let min, max;
+  if(typeof scaleOpts.fixedMin === 'number' && typeof scaleOpts.fixedMax === 'number'
+      && scaleOpts.fixedMax > scaleOpts.fixedMin){
+    min = scaleOpts.fixedMin;
+    max = scaleOpts.fixedMax;
+  } else {
+    min = Math.min.apply(null, nums);
+    max = Math.max.apply(null, nums);
+  }
   const span = max - min || 1;
   const coords = nums.map(function(v,i){
+    const clamped = Math.max(min, Math.min(max, v));
     return {
       v: v,
       x: (i/(nums.length-1)) * (w-4) + 2,
-      y: h - 4 - ((v-min)/span)*(h-8),
+      y: h - 4 - ((clamped-min)/span)*(h-8),
     };
   });
 
@@ -606,13 +645,13 @@ function selectedProblemEventids(resultsEl){
 function enhanceProblemsResults(resultsEl, problems, refreshKey, refreshFn, exportScope){
   if(!resultsEl) return;
   problems = problems || [];
-  // tools bar
+
+  // Unified toolbar: severity chips (left) + filter / refresh / export (right)
   const tools = document.createElement('div');
-  tools.className = 'table-tools';
+  tools.className = 'table-tools table-tools-top prob-tools';
   tools.innerHTML =
     '<input type="search" placeholder="Filter rows…">'+
-    '<span class="table-tools-spacer"></span>'+
-    '<label class="table-tools-refresh"><span>Refresh</span> '+
+    '<label class="table-tools-refresh"><span>Auto</span> '+
       '<select data-act="refresh">'+
         '<option value="0">Off</option>'+
         '<option value="30">30s</option>'+
@@ -622,34 +661,60 @@ function enhanceProblemsResults(resultsEl, problems, refreshKey, refreshFn, expo
     '<span class="table-tools-group">'+
       '<button type="button" class="chip-btn" data-act="export-csv">CSV</button>'+
       '<button type="button" class="chip-btn" data-act="export-pdf">PDF</button>'+
+    '</span>';
+
+  // Selection action bar (only visible when rows are checked)
+  const selBar = document.createElement('div');
+  selBar.className = 'prob-selection-bar';
+  selBar.hidden = true;
+  selBar.innerHTML =
+    '<span class="prob-sel-count" data-act="sel-count">0 selected</span>'+
+    '<span class="prob-sel-actions">'+
+      '<button type="button" class="btn btn-ghost" data-act="ack" title="Acknowledge selected">Acknowledge</button>'+
+      '<button type="button" class="btn btn-ghost" data-act="close" title="Close selected (if allowed)">Close selected</button>'+
+      '<button type="button" class="btn btn-ghost" data-act="unack" title="Unacknowledge selected">Unack</button>'+
     '</span>'+
-    '<span class="table-tools-group">'+
-      '<button type="button" class="chip-btn" data-act="ack" title="Acknowledge selected">Ack</button>'+
-      '<button type="button" class="chip-btn" data-act="close" title="Close selected (if allowed)">Close</button>'+
-      '<button type="button" class="chip-btn" data-act="unack" title="Unacknowledge selected">Unack</button>'+
-    '</span>'+
-    '<span class="status-msg" data-act="bulk-status" style="margin-left:4px;"></span>';
-  resultsEl.appendChild(tools);
+    '<span class="status-msg" data-act="bulk-status"></span>';
+
+  // Wrap severity strip + tools into one toolbar row
+  const tableWrap = resultsEl.querySelector('.pivot-wrap');
+  const sevStrip = resultsEl.querySelector('.sev-counter-strip, .insight-strip');
+  const toolbar = document.createElement('div');
+  toolbar.className = 'prob-results-toolbar';
+  if(sevStrip){
+    sevStrip.classList.add('prob-sev-inline');
+    toolbar.appendChild(sevStrip);
+  }
+  toolbar.appendChild(tools);
+
+  if(tableWrap){
+    resultsEl.insertBefore(toolbar, tableWrap);
+    resultsEl.insertBefore(selBar, tableWrap);
+  } else {
+    resultsEl.insertBefore(toolbar, resultsEl.firstChild);
+    resultsEl.appendChild(selBar);
+  }
 
   const tbl = resultsEl.querySelector('table');
   if(typeof makeTableSortable === 'function') makeTableSortable(tbl);
   if(typeof wireTableSearch === 'function') wireTableSearch(tools.querySelector('input'), tbl);
 
-    // Wire severity chip click-to-filter
+  // Severity chip click-to-filter (skip zero chips)
   resultsEl.querySelectorAll('.insight-chip[data-sev]').forEach(function(chip){
+    if(chip.classList.contains('is-zero')) return;
     chip.style.cursor = 'pointer';
-    chip.title = 'Click to filter table to this severity';
     chip.addEventListener('click', function(){
       const search = tools.querySelector('input[type=search]');
       if(!search || !tbl) return;
-      const label = (chip.textContent || '').replace(/^\d+\s*/, '').trim();
+      // Label format is "Average: 1" — filter by severity name only
+      const raw = (chip.textContent || '').trim();
+      const label = raw.replace(/:\s*\d+\s*$/, '').trim();
       if(search.value === label){ search.value = ''; }
       else { search.value = label; }
       search.dispatchEvent(new Event('input'));
     });
   });
 
-  // Wire age-timeline bars: filter table rows by age band (toggle)
   function applyAgeFilter(minSec, maxSec, label){
     if(!tbl) return;
     const rows = tbl.querySelectorAll('tbody tr');
@@ -660,29 +725,28 @@ function enhanceProblemsResults(resultsEl, problems, refreshKey, refreshFn, expo
       tr.style.display = ok ? '' : 'none';
       if(ok) shown++;
     });
-    // Clear text search so it doesn't fight age filter
     const search = tools.querySelector('input[type=search]');
     if(search) search.value = '';
-    const statusEl = tools.querySelector('[data-act="bulk-status"]');
+    const statusEl = selBar.querySelector('[data-act="bulk-status"]');
     if(statusEl){
-      statusEl.textContent = label ? ('Age filter: '+label+' ('+shown+') — click bar again to clear') : '';
+      statusEl.textContent = label ? ('Age: '+label+' ('+shown+') — click again to clear') : '';
       statusEl.className = 'status-msg';
     }
   }
   function clearAgeFilter(){
     if(!tbl) return;
     tbl.querySelectorAll('tbody tr').forEach(function(tr){ tr.style.display = ''; });
-    resultsEl.querySelectorAll('.age-bar.active').forEach(function(b){ b.classList.remove('active'); });
-    const statusEl = tools.querySelector('[data-act="bulk-status"]');
+    resultsEl.querySelectorAll('.age-h-row.active, .age-bar.active').forEach(function(b){ b.classList.remove('active'); });
+    const statusEl = selBar.querySelector('[data-act="bulk-status"]');
     if(statusEl) statusEl.textContent = '';
   }
-  resultsEl.querySelectorAll('.age-bar').forEach(function(bar){
+  resultsEl.querySelectorAll('.age-h-row, .age-bar').forEach(function(bar){
     function activate(){
       if(bar.classList.contains('active')){
         clearAgeFilter();
         return;
       }
-      resultsEl.querySelectorAll('.age-bar.active').forEach(function(b){ b.classList.remove('active'); });
+      resultsEl.querySelectorAll('.age-h-row.active, .age-bar.active').forEach(function(b){ b.classList.remove('active'); });
       bar.classList.add('active');
       const minSec = parseInt(bar.getAttribute('data-age-min'), 10) || 0;
       const maxRaw = bar.getAttribute('data-age-max');
@@ -695,9 +759,9 @@ function enhanceProblemsResults(resultsEl, problems, refreshKey, refreshFn, expo
     });
   });
 
-async function runBulk(kind){
+  async function runBulk(kind){
     const ids = selectedProblemEventids(resultsEl);
-    const statusEl = tools.querySelector('[data-act="bulk-status"]');
+    const statusEl = selBar.querySelector('[data-act="bulk-status"]');
     if(!ids.length){
       showToast('Select one or more problems first.', { type: 'warn' });
       return;
@@ -709,7 +773,7 @@ async function runBulk(kind){
         '',
         { okLabel: kind === 'close' ? 'Close' : 'Acknowledge', placeholder: 'Message (optional)' }
       );
-      if(message === null) return; // cancelled
+      if(message === null) return;
     } else if(kind === 'unack'){
       const ok = await confirmModal('Unacknowledge ' + ids.length + ' problem(s)?');
       if(!ok) return;
@@ -729,32 +793,40 @@ async function runBulk(kind){
       );
       if(typeof refreshFn === 'function') refreshFn();
     }catch(err){
-      if(statusEl){ statusEl.textContent = err.message || String(err); statusEl.className = 'status-msg warn'; }
-      showToast(err.message || String(err), { type: 'warn' });
+      const msg = (err && err.message) ? err.message : String(err);
+      const hint = (kind === 'close' && /permission|not allowed|cannot|manual/i.test(msg))
+        ? ' (trigger may not allow manual close, or your Zabbix user lacks rights)'
+        : '';
+      if(statusEl){ statusEl.textContent = msg + hint; statusEl.className = 'status-msg warn'; }
+      showToast(msg + hint, { type: 'warn' });
     }
   }
 
-  tools.querySelector('[data-act="ack"]').addEventListener('click', function(){ runBulk('ack'); });
-  tools.querySelector('[data-act="close"]').addEventListener('click', function(){ runBulk('close'); });
-  tools.querySelector('[data-act="unack"]').addEventListener('click', function(){ runBulk('unack'); });
+  selBar.querySelector('[data-act="ack"]').addEventListener('click', function(){ runBulk('ack'); });
+  selBar.querySelector('[data-act="close"]').addEventListener('click', function(){ runBulk('close'); });
+  selBar.querySelector('[data-act="unack"]').addEventListener('click', function(){ runBulk('unack'); });
+
+  const viewTitle = (exportScope && (exportScope.name || exportScope.title)) || 'Problems';
+  const fileBase = (typeof sanitizeExportFilename === 'function'
+    ? sanitizeExportFilename(viewTitle, 'problems')
+    : String(viewTitle).replace(/[^a-z0-9]+/gi, '_')) || 'problems';
 
   tools.querySelector('[data-act="export-csv"]').addEventListener('click', async function(){
     if(exportScope && typeof downloadProblemsExport === 'function'){
-      downloadProblemsExport(exportScope, 'csv');
+      downloadProblemsExport(Object.assign({}, exportScope, { name: viewTitle }), 'csv');
     } else if(typeof exportVisibleTable === 'function'){
-      exportVisibleTable(resultsEl, 'problems.csv', { title: 'Problems' });
+      exportVisibleTable(resultsEl, fileBase + '.csv', { title: viewTitle });
     }
   });
   const pdfBtn = tools.querySelector('[data-act="export-pdf"]');
   if(pdfBtn){
     pdfBtn.addEventListener('click', function(){
-      exportVisibleTablePdf(resultsEl, 'problems.pdf', { title: 'Problems' });
+      exportVisibleTablePdf(resultsEl, fileBase + '.pdf', { title: viewTitle });
     });
   }
 
   const refreshSel = tools.querySelector('[data-act="refresh"]');
   if(refreshSel && typeof wireAutoRefresh === 'function' && refreshFn){
-    // Restore last refresh preference for this key
     const saved = localStorage.getItem('zr_refresh_' + (refreshKey || 'problems'));
     if(saved && refreshSel.querySelector('option[value="'+saved+'"]')){
       refreshSel.value = saved;
@@ -765,24 +837,40 @@ async function runBulk(kind){
     wireAutoRefresh(refreshKey || 'problems', refreshSel, refreshFn);
   }
 
-  // Select-all checkbox in header
+  function updateSelectionBar(){
+    const ids = selectedProblemEventids(resultsEl);
+    const n = ids.length;
+    const countEl = selBar.querySelector('[data-act="sel-count"]');
+    if(countEl) countEl.textContent = n === 1 ? '1 selected' : (n + ' selected');
+    selBar.hidden = n === 0;
+    selBar.classList.toggle('is-active', n > 0);
+    // Highlight selected rows (mockup amber tint)
+    resultsEl.querySelectorAll('input.prob-check').forEach(function(cb){
+      const tr = cb.closest('tr');
+      if(tr) tr.classList.toggle('is-selected', !!cb.checked);
+    });
+  }
+
   const selectAll = resultsEl.querySelector('input.prob-check-all');
   if(selectAll){
     selectAll.addEventListener('change', function(){
       resultsEl.querySelectorAll('input.prob-check').forEach(function(cb){
         const tr = cb.closest('tr');
-        if(tr && tr.style.display === 'none') return; // skip filtered-out rows
+        if(tr && tr.style.display === 'none') return;
         cb.checked = selectAll.checked;
       });
+      updateSelectionBar();
     });
   }
+  resultsEl.querySelectorAll('input.prob-check').forEach(function(cb){
+    cb.addEventListener('change', updateSelectionBar);
+  });
 
   if(tbl && tbl.tBodies[0]){
     Array.prototype.forEach.call(tbl.tBodies[0].rows, function(tr, idx){
       tr.style.cursor = 'pointer';
       tr.title = 'Click for details';
       tr.addEventListener('click', function(e){
-        // Don't open drawer when clicking checkbox or action buttons
         if(e.target && (e.target.closest('input') || e.target.closest('button'))) return;
         const p = problems[idx];
         if(!p || typeof openDrawer !== 'function') return;
@@ -792,8 +880,18 @@ async function runBulk(kind){
   }
 }
 
+function isProblemOpen(p){
+  if(!p) return false;
+  const st = String(p.problem_status || '').toLowerCase();
+  if(st === 'closed') return false;
+  if(st === 'open') return true;
+  const rid = p.r_eventid;
+  if(rid == null || rid === '' || rid === 0 || rid === '0') return true;
+  try{ return parseInt(rid, 10) === 0; }catch(e){ return false; }
+}
+
 async function openProblemDrawer(p, refreshFn){
-  const isOpen = (p.problem_status === 'Open') || (p.r_eventid == null);
+  const isOpen = isProblemOpen(p);
   const isAcked = (p.ack_status === 'Acknowledged') || (parseInt(p.acknowledged,10) === 1);
   const body =
     '<div class="kv">'+
@@ -839,8 +937,13 @@ async function openProblemDrawer(p, refreshFn){
       closeDrawer();
       if(typeof refreshFn === 'function') refreshFn();
     }catch(err){
-      if(statusEl){ statusEl.textContent = err.message || String(err); statusEl.className = 'status-msg warn'; }
-      showToast(err.message || String(err), { type: 'warn' });
+      const msg = (err && err.message) ? err.message : String(err);
+      // Zabbix often rejects close when the trigger has "Allow manual close" disabled
+      const hint = (kind === 'close' && /permission|not allowed|cannot|manual/i.test(msg))
+        ? ' (trigger may not allow manual close, or your Zabbix user lacks rights)'
+        : '';
+      if(statusEl){ statusEl.textContent = msg + hint; statusEl.className = 'status-msg warn'; }
+      showToast(msg + hint, { type: 'warn' });
     }
   }
   const ackBtn = drawer.querySelector('[data-act="ack"]');
@@ -863,7 +966,10 @@ async function downloadProblemsExport(scope, format){
     const blob = await res.blob();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'problems.' + format;
+    const base = (typeof sanitizeExportFilename === 'function'
+      ? sanitizeExportFilename((scope && (scope.name || scope.title)) || 'problems', 'problems')
+      : 'problems');
+    a.download = base + '.' + format;
     document.body.appendChild(a);
     a.click();
     setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
@@ -886,16 +992,20 @@ async function loadShareDirectories(force){
       apiFetch('/api/zbx/users'),
       apiFetch('/api/zbx/usrgrps'),
     ]);
-    if(u.ok){ zbxUsersCache = await u.json(); }
-    else{
+    if(u.ok){
+      const data = await u.json();
+      zbxUsersCache = Array.isArray(data) ? data : [];
+    } else {
       const err = await u.json().catch(function(){ return {}; });
-      shareDirError = err.detail || ('Could not load Zabbix users (HTTP '+u.status+').');
+      shareDirError = (typeof err.detail === 'string' ? err.detail : null) || ('Could not load Zabbix users (HTTP '+u.status+').');
       zbxUsersCache = null;
     }
-    if(g.ok){ zbxUsrgrpsCache = await g.json(); }
-    else{
+    if(g.ok){
+      const data = await g.json();
+      zbxUsrgrpsCache = Array.isArray(data) ? data : [];
+    } else {
       const err = await g.json().catch(function(){ return {}; });
-      if(!shareDirError) shareDirError = err.detail || ('Could not load Zabbix user groups (HTTP '+g.status+').');
+      if(!shareDirError) shareDirError = (typeof err.detail === 'string' ? err.detail : null) || ('Could not load Zabbix user groups (HTTP '+g.status+').');
       zbxUsrgrpsCache = null;
     }
   }catch(e){
@@ -935,35 +1045,32 @@ function sharePickerHtml(idPrefix, selectedUserids, selectedGrpids){
     grpids: selectedGrpids.map(function(id){ return parseInt(id, 10); }),
   };
   return errorBox+
-    '<div class="share-pickers" data-share="'+idPrefix+'">'+
-      '<div class="field" style="flex:1;min-width:180px;">'+
-        '<label>Users</label>'+
-        '<div class="picker" id="'+idPrefix+'UsersPicker">'+
-          '<div class="picker-trigger" id="'+idPrefix+'UsersTrigger" tabindex="0">'+
-            '<span class="picker-placeholder" id="'+idPrefix+'UsersPlaceholder">Select users…</span>'+
-            '<svg class="picker-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
-          '</div>'+
-          '<div class="picker-panel" id="'+idPrefix+'UsersPanel">'+
-            '<input class="picker-search" id="'+idPrefix+'UsersSearch" placeholder="Filter users…" autocomplete="off">'+
-            '<div class="picker-list" id="'+idPrefix+'UsersList"></div>'+
-          '</div>'+
+    '<div class="field builder-field-users" data-share="'+idPrefix+'">'+
+      '<label>Share with users</label>'+
+      '<div class="picker" id="'+idPrefix+'UsersPicker">'+
+        '<div class="picker-trigger" id="'+idPrefix+'UsersTrigger" tabindex="0">'+
+          '<span class="picker-placeholder" id="'+idPrefix+'UsersPlaceholder">Select users to share…</span>'+
+          '<svg class="picker-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
         '</div>'+
-      '</div>'+
-      '<div class="field" style="flex:1;min-width:180px;">'+
-        '<label>User groups</label>'+
-        '<div class="picker" id="'+idPrefix+'GrpsPicker">'+
-          '<div class="picker-trigger" id="'+idPrefix+'GrpsTrigger" tabindex="0">'+
-            '<span class="picker-placeholder" id="'+idPrefix+'GrpsPlaceholder">Select groups…</span>'+
-            '<svg class="picker-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
-          '</div>'+
-          '<div class="picker-panel" id="'+idPrefix+'GrpsPanel">'+
-            '<input class="picker-search" id="'+idPrefix+'GrpsSearch" placeholder="Filter groups…" autocomplete="off">'+
-            '<div class="picker-list" id="'+idPrefix+'GrpsList"></div>'+
-          '</div>'+
+        '<div class="picker-panel" id="'+idPrefix+'UsersPanel">'+
+          '<input class="picker-search" id="'+idPrefix+'UsersSearch" placeholder="Filter users…" autocomplete="off">'+
+          '<div class="picker-list" id="'+idPrefix+'UsersList"></div>'+
         '</div>'+
       '</div>'+
     '</div>'+
-    '<div class="share-hint">Specific users/groups can view &amp; run; only the owner can edit.</div>';
+    '<div class="field builder-field-usrgrps">'+
+      '<label>Share with user groups</label>'+
+      '<div class="picker" id="'+idPrefix+'GrpsPicker">'+
+        '<div class="picker-trigger" id="'+idPrefix+'GrpsTrigger" tabindex="0">'+
+          '<span class="picker-placeholder" id="'+idPrefix+'GrpsPlaceholder">Select groups to share…</span>'+
+          '<svg class="picker-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
+        '</div>'+
+        '<div class="picker-panel" id="'+idPrefix+'GrpsPanel">'+
+          '<input class="picker-search" id="'+idPrefix+'GrpsSearch" placeholder="Filter groups…" autocomplete="off">'+
+          '<div class="picker-list" id="'+idPrefix+'GrpsList"></div>'+
+        '</div>'+
+      '</div>'+
+    '</div>';
 }
 
 function wireSharePicker(idPrefix){
@@ -1086,25 +1193,40 @@ function wireSharePicker(idPrefix){
     });
   }
 
+  function closeSharePanels(exceptPanel){
+    document.querySelectorAll('[id$="UsersPanel"], [id$="GrpsPanel"]').forEach(function(p){
+      if(exceptPanel && p === exceptPanel) return;
+      p.classList.remove('open');
+      p.style.display = '';
+    });
+    document.querySelectorAll('[id$="UsersTrigger"], [id$="GrpsTrigger"]').forEach(function(t){
+      t.classList.remove('open');
+    });
+  }
+
   function wirePicker(triggerId, panelId, searchId, renderList){
     const trigger = document.getElementById(triggerId);
     const panel = document.getElementById(panelId);
     const search = document.getElementById(searchId);
     if(!trigger || !panel) return;
-    trigger.addEventListener('click', function(){
+    // Avoid double-binding if wireSharePicker is called again
+    if(trigger._shareWired) return;
+    trigger._shareWired = true;
+    trigger.addEventListener('click', function(e){
+      e.stopPropagation();
       const open = !panel.classList.contains('open');
-      // close other share panels
-      document.querySelectorAll('.share-pickers .picker-panel.open').forEach(function(p){
-        if(p !== panel) p.classList.remove('open');
-      });
-      document.querySelectorAll('.share-pickers .picker-trigger.open').forEach(function(t){
-        if(t !== trigger) t.classList.remove('open');
-      });
+      closeSharePanels(open ? panel : null);
+      // Clear any inline display:none left by host/group toggle helpers
+      panel.style.display = open ? 'block' : '';
       panel.classList.toggle('open', open);
       trigger.classList.toggle('open', open);
-      if(open && search){ search.focus(); }
+      if(open){
+        renderList(search ? search.value : '');
+        if(search) search.focus();
+      }
     });
-    if(search){
+    if(search && !search._shareWired){
+      search._shareWired = true;
       search.addEventListener('input', function(){ renderList(search.value); });
       search.addEventListener('click', function(e){ e.stopPropagation(); });
     }
@@ -1117,16 +1239,42 @@ function wireSharePicker(idPrefix){
   renderUsersTrigger();
   renderGrpsTrigger();
 
-  // close on outside click
-  if(!window._sharePickerDocClose){
-    window._sharePickerDocClose = true;
-    document.addEventListener('click', function(e){
-      if(e.target.closest && e.target.closest('.share-pickers .picker')) return;
-      document.querySelectorAll('.share-pickers .picker-panel.open').forEach(function(p){ p.classList.remove('open'); });
-      document.querySelectorAll('.share-pickers .picker-trigger.open').forEach(function(t){ t.classList.remove('open'); });
-    });
-  }
+  // Global outside-click dismiss is installed once via ensurePickerOutsideClose()
+  ensurePickerOutsideClose();
 }
+
+/** Close every open custom picker panel across the app. */
+function closeAllOpenPickers(exceptPanel){
+  document.querySelectorAll('.picker-panel.open, .picker-panel[style*="display: block"], .picker-panel[style*="display:block"]').forEach(function(p){
+    if(exceptPanel && p === exceptPanel) return;
+    p.classList.remove('open');
+    p.style.display = '';
+  });
+  document.querySelectorAll('.picker-trigger.open').forEach(function(t){
+    t.classList.remove('open');
+  });
+  // Also native-looking custom panels that may only use inline display
+  document.querySelectorAll('.picker-panel').forEach(function(p){
+    if(exceptPanel && p === exceptPanel) return;
+    if(p.style.display === 'block'){
+      p.style.display = '';
+      p.classList.remove('open');
+    }
+  });
+}
+
+function ensurePickerOutsideClose(){
+  if(window._pickerOutsideClose) return;
+  window._pickerOutsideClose = true;
+  document.addEventListener('click', function(e){
+    // e.target is the deepest node; closest works in capture too
+    if(e.target.closest && e.target.closest('.picker')) return;
+    if(e.target.closest && e.target.closest('.prefs-menu, .topbar-menu, .drawer, .modal, .drawer-backdrop')) return;
+    closeAllOpenPickers(null);
+  }, true);
+}
+ensurePickerOutsideClose();
+
 
 function readSharePicker(idPrefix){
   const st = (window._sharePickState && window._sharePickState[idPrefix]) || null;
@@ -1172,73 +1320,88 @@ async function boot(){
     document.body.insertBefore(skip, document.body.firstChild);
   }
 
-  // header extras: theme + display — sit with user controls on the right
-  const pulse = document.querySelector('.pulse-wrap');
-  const userBadge = document.getElementById('userBadge');
-  if(pulse && !document.getElementById('uiExtras')){
-    const extras = document.createElement('div');
-    extras.id = 'uiExtras';
-    extras.className = 'header-actions';
-    extras.innerHTML =
-      '<button type="button" class="icon-btn" id="themeBtn" title="Cycle theme (auto / dark / light)">'+ICON_SUN+'</button>'+
-      '<div class="prefs-wrap">'+
-        '<button type="button" class="chip-btn" id="prefsBtn" title="Display preferences">Display</button>'+
-        '<div class="prefs-popover" id="prefsPopover" role="dialog" aria-label="Display preferences">'+
-          '<div class="prefs-section">'+
-            '<div class="prefs-section-label">Theme</div>'+
-            '<div class="prefs-seg" role="group" aria-label="Theme">'+
-              '<button type="button" class="prefs-seg-btn" data-pref-theme="auto">Auto</button>'+
-              '<button type="button" class="prefs-seg-btn" data-pref-theme="dark">Dark</button>'+
-              '<button type="button" class="prefs-seg-btn" data-pref-theme="light">Light</button>'+
+  // header extras: theme + Display — always present (HTML or inject once)
+  (function wireHeaderActions(){
+    const pulse = document.querySelector('.pulse-wrap');
+    const userBadge = document.getElementById('userBadge');
+    let extras = document.getElementById('uiExtras');
+    if(!extras && pulse){
+      extras = document.createElement('div');
+      extras.id = 'uiExtras';
+      extras.className = 'header-actions';
+      extras.innerHTML =
+        '<button type="button" class="icon-btn" id="themeBtn" title="Cycle theme (auto / dark / light)">'+ICON_SUN+'</button>'+
+        '<div class="prefs-wrap">'+
+          '<button type="button" class="chip-btn" id="prefsBtn" title="Display preferences">Display</button>'+
+          '<div class="prefs-popover" id="prefsPopover" role="dialog" aria-label="Display preferences">'+
+            '<div class="prefs-section">'+
+              '<div class="prefs-section-label">Theme</div>'+
+              '<div class="prefs-seg" role="group" aria-label="Theme">'+
+                '<button type="button" class="prefs-seg-btn" data-pref-theme="auto">Auto</button>'+
+                '<button type="button" class="prefs-seg-btn" data-pref-theme="dark">Dark</button>'+
+                '<button type="button" class="prefs-seg-btn" data-pref-theme="light">Light</button>'+
+              '</div>'+
+              '<select id="prefTheme" class="sr-only" aria-hidden="true" tabindex="-1">'+
+                '<option value="auto">Auto</option><option value="dark">Dark</option><option value="light">Light</option>'+
+              '</select>'+
             '</div>'+
-            '<select id="prefTheme" class="sr-only" aria-hidden="true" tabindex="-1">'+
-              '<option value="auto">Auto</option><option value="dark">Dark</option><option value="light">Light</option>'+
-            '</select>'+
-          '</div>'+
-          '<div class="prefs-section">'+
-            '<div class="prefs-section-label">Density</div>'+
-            '<div class="prefs-seg" role="group" aria-label="Density">'+
-              '<button type="button" class="prefs-seg-btn" data-pref-density="compact">Compact</button>'+
-              '<button type="button" class="prefs-seg-btn" data-pref-density="comfortable">Comfortable</button>'+
+            '<div class="prefs-section">'+
+              '<div class="prefs-section-label">Density</div>'+
+              '<div class="prefs-seg" role="group" aria-label="Density">'+
+                '<button type="button" class="prefs-seg-btn" data-pref-density="compact">Compact</button>'+
+                '<button type="button" class="prefs-seg-btn" data-pref-density="comfortable">Comfortable</button>'+
+              '</div>'+
+              '<select id="prefDensity" class="sr-only" aria-hidden="true" tabindex="-1">'+
+                '<option value="compact">Compact</option><option value="comfortable">Comfortable</option>'+
+              '</select>'+
             '</div>'+
-            '<select id="prefDensity" class="sr-only" aria-hidden="true" tabindex="-1">'+
-              '<option value="compact">Compact</option><option value="comfortable">Comfortable</option>'+
-            '</select>'+
+            '<label class="prefs-row">Text size <select id="prefFont">'+
+              '<option value="sm">Small</option>'+
+              '<option value="md">Medium</option>'+
+              '<option value="lg">Large</option>'+
+            '</select></label>'+
           '</div>'+
-          '<label class="prefs-row">Text size <select id="prefFont">'+
-            '<option value="sm">Small</option>'+
-            '<option value="md">Medium</option>'+
-            '<option value="lg">Large</option>'+
-          '</select></label>'+
-        '</div>'+
-      '</div>';
-    if(userBadge) userBadge.parentNode.insertBefore(extras, userBadge);
-    else if(pulse.parentNode) pulse.parentNode.appendChild(extras);
-
-    document.getElementById('themeBtn').addEventListener('click', toggleTheme);
-
+        '</div>';
+      if(userBadge) userBadge.parentNode.insertBefore(extras, userBadge);
+      else if(pulse.parentNode) pulse.parentNode.appendChild(extras);
+    }
+    if(extras){
+      extras.classList.add('header-actions');
+      extras.style.display = 'flex';
+    }
+    const themeBtn = document.getElementById('themeBtn');
+    if(themeBtn && !themeBtn._wired){
+      themeBtn._wired = true;
+      themeBtn.addEventListener('click', toggleTheme);
+    }
     const prefsBtn = document.getElementById('prefsBtn');
     const pop = document.getElementById('prefsPopover');
-    prefsBtn.addEventListener('click', function(e){
-      e.stopPropagation();
-      pop.classList.toggle('open');
-      applyUiPrefs();
-    });
-    document.addEventListener('click', function(e){
-      if(pop.classList.contains('open') && !pop.contains(e.target) && e.target !== prefsBtn){
-        pop.classList.remove('open');
-      }
-    });
-    document.getElementById('prefTheme').addEventListener('change', function(e){ setUiPref('theme', e.target.value); });
-    document.getElementById('prefFont').addEventListener('change', function(e){ setUiPref('font', e.target.value); });
-    document.getElementById('prefDensity').addEventListener('change', function(e){ setUiPref('density', e.target.value); });
-    pop.querySelectorAll('[data-pref-theme]').forEach(function(b){
-      b.addEventListener('click', function(){ setUiPref('theme', b.getAttribute('data-pref-theme')); });
-    });
-    pop.querySelectorAll('[data-pref-density]').forEach(function(b){
-      b.addEventListener('click', function(){ setUiPref('density', b.getAttribute('data-pref-density')); });
-    });
-  }
+    if(prefsBtn && pop && !prefsBtn._wired){
+      prefsBtn._wired = true;
+      prefsBtn.addEventListener('click', function(e){
+        e.stopPropagation();
+        pop.classList.toggle('open');
+        applyUiPrefs();
+      });
+      document.addEventListener('click', function(e){
+        if(pop.classList.contains('open') && !pop.contains(e.target) && e.target !== prefsBtn){
+          pop.classList.remove('open');
+        }
+      });
+      const prefTheme = document.getElementById('prefTheme');
+      const prefFont = document.getElementById('prefFont');
+      const prefDensity = document.getElementById('prefDensity');
+      if(prefTheme) prefTheme.addEventListener('change', function(e){ setUiPref('theme', e.target.value); });
+      if(prefFont) prefFont.addEventListener('change', function(e){ setUiPref('font', e.target.value); });
+      if(prefDensity) prefDensity.addEventListener('change', function(e){ setUiPref('density', e.target.value); });
+      pop.querySelectorAll('[data-pref-theme]').forEach(function(b){
+        b.addEventListener('click', function(){ setUiPref('theme', b.getAttribute('data-pref-theme')); });
+      });
+      pop.querySelectorAll('[data-pref-density]').forEach(function(b){
+        b.addEventListener('click', function(){ setUiPref('density', b.getAttribute('data-pref-density')); });
+      });
+    }
+  })();
   applyUiPrefs(); // re-apply now that themeBtn exists
 
   // Keyboard shortcuts
@@ -1332,8 +1495,8 @@ async function boot(){
     });
     updateHealthButtonState();
   }
-  // periodic health refresh
-  setInterval(function(){ checkHealth(); }, 60000);
+  // periodic health refresh (also feeds the DB-latency sparkline)
+  setInterval(function(){ checkHealth(); }, 15000);
 
   // Tab switching
   document.querySelectorAll('#navTabs button').forEach(function(btn){

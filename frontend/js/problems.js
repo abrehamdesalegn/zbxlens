@@ -94,24 +94,36 @@ async function showProblemDashList(){
       const owner = d.mine ? 'You' : ('By '+escHtml(d.owner_username||'unknown'));
       const shareBadge = shareBadgeHtml(d);
       const pinned = isPinned('problem_dashboard', d.id);
-      const meta = owner+' · '+(g ? escHtml(g)+' · ' : '') + nHosts + ' host'+(nHosts===1?'':'s')+
-        ' · '+(d.status||'open')+' · min sev '+(d.min_severity||0)+
-        ' · updated '+new Date(d.updated_at*1000).toLocaleDateString();
-      const editBtns = d.can_edit
-        ? '<button data-act="edit" data-id="'+d.id+'">Edit</button>'+
-          '<button data-act="delete" data-id="'+d.id+'" class="danger">Delete</button>'
-        : '';
-      const dupBtn = canManage() ? '<button data-act="dup" data-id="'+d.id+'">Duplicate</button>' : '';
-      return '<div class="dash-card">'+
-        '<div class="dash-card-top"><h4>'+escHtml(d.name)+shareBadge+'</h4>'+
-          '<button type="button" class="pin-btn'+(pinned?' pinned':'')+'" data-act="pin" data-id="'+d.id+'" title="'+(pinned?'Unpin':'Pin to top')+'">★</button>'+
+      const meta =
+        '<span class="meta-tok">'+owner+'</span>'+
+        (g ? '<span class="meta-sep">·</span><span class="meta-tok">'+escHtml(g)+'</span>' : '')+
+        '<span class="meta-sep">·</span><span class="meta-tok">'+nHosts+' host'+(nHosts===1?'':'s')+'</span>'+
+        '<span class="meta-sep">·</span><span class="meta-tok">'+(d.status||'open')+'</span>'+
+        '<span class="meta-sep">·</span><span class="meta-tok">min sev '+(d.min_severity||0)+'</span>'+
+        '<span class="meta-sep">·</span><span class="meta-tok">updated '+new Date(d.updated_at*1000).toLocaleDateString()+'</span>';
+      const moreItems = [];
+      moreItems.push('<button type="button" role="menuitem" data-act="export" data-id="'+d.id+'">Export JSON</button>');
+      if(canManage()) moreItems.push('<button type="button" role="menuitem" data-act="dup" data-id="'+d.id+'">Duplicate</button>');
+      if(d.can_edit){
+        moreItems.push('<button type="button" role="menuitem" data-act="edit" data-id="'+d.id+'">Edit</button>');
+        moreItems.push('<button type="button" role="menuitem" data-act="delete" data-id="'+d.id+'" class="danger">Delete</button>');
+      }
+      return '<div class="dash-card dash-card-clickable" data-act="run" data-id="'+d.id+'" title="Open problem view" role="button" tabindex="0">'+
+        '<div class="dash-card-top">'+
+          '<h4>'+escHtml(d.name)+shareBadge+'</h4>'+
+          '<div class="dash-card-tools">'+
+            '<button type="button" class="pin-btn'+(pinned?' pinned':'')+'" data-act="pin" data-id="'+d.id+'" title="'+(pinned?'Unpin':'Pin to top')+'">★</button>'+
+            (moreItems.length
+              ? '<div class="card-more">'+
+                  '<button type="button" class="card-more-btn" data-act="more" aria-haspopup="true" aria-expanded="false" title="More actions">···</button>'+
+                  '<div class="card-more-menu" role="menu" hidden>'+moreItems.join('')+'</div>'+
+                '</div>'
+              : '')+
+          '</div>'+
         '</div>'+
         '<div class="dash-meta">'+meta+'</div>'+
-        '<div class="dash-actions">'+
-          '<button data-act="run" data-id="'+d.id+'">Run</button>'+
-          '<button data-act="export" data-id="'+d.id+'">Export</button>'+
-          dupBtn+editBtns+
-        '</div></div>';
+        '<div class="dash-card-hint">Click to run</div>'+
+      '</div>';
     }).join('');
   }
 
@@ -141,30 +153,11 @@ async function showProblemDashList(){
   ].map(function(p){ return '<option value="'+p[0]+'">'+p[1]+'</option>'; }).join('');
 
   root.innerHTML =
-    '<p class="page-intro">See current open problems for a host or group, or save a scope as a dashboard for one-click refresh.</p>'+
-    // ---- Instant viewer (no save) ----
-    '<div class="filterbar qv-bar" style="margin-bottom:18px;">'+
-      '<div class="eyebrow" style="margin-bottom:8px;">Quick view</div>'+
-      /* Row 1: Host group · Load · Min sev · Status  |  Show problems · Clear (right) */
-      '<div class="qv-row qv-row-actions">'+
-        '<div class="field" style="flex:0 1 280px;min-width:200px;"><label for="qvGroup">Host group</label>'+
+    '<div class="filterbar qv-bar qv-bar-problems qv-bar-compact" style="margin-bottom:12px;">'+
+      '<div class="qv-row qv-row-problems">'+
+        '<div class="field qv-prob-group"><label for="qvGroup">Host groups</label>'+
           '<select id="qvGroup">'+groupOpts+'</select></div>'+
-        '<div class="field" style="flex:0 0 auto;"><label>&nbsp;</label>'+
-          '<button type="button" class="btn btn-ghost" id="qvLoadGroupBtn" style="height:38px;white-space:nowrap;">Load hosts</button></div>'+
-        '<div class="field" style="flex:0 0 150px;"><label for="qvSev">Min severity</label>'+
-          '<select id="qvSev">'+sevOpts+'</select></div>'+
-        '<div class="field" style="flex:0 0 130px;"><label for="qvProbStatus">Status</label>'+
-          '<select id="qvProbStatus">'+problemStatusOptions((probState.quick&&probState.quick.status)||'open')+'</select></div>'+
-        '<div class="qv-row-end">'+
-          '<button class="btn btn-primary" id="qvRunBtn" style="height:38px;"><span class="spinner"></span><span class="btn-label">Show problems</span></button>'+
-          '<button type="button" class="btn btn-ghost" id="qvClearBtn" style="height:38px;" title="Clear host and group selection">Clear</button>'+
-          '<span class="status-msg" id="qvStatus"></span>'+
-          '<span class="prob-count" id="qvCount"></span>'+
-        '</div>'+
-      '</div>'+
-      /* Row 2: Hosts full width */
-      '<div class="qv-row">'+
-        '<div class="field" style="flex:1 1 100%;min-width:200px;"><label for="qvHostsTrigger">Hosts</label>'+
+        '<div class="field qv-prob-hosts"><label for="qvHostsTrigger">Hosts</label>'+
           '<div class="picker" id="qvHostsPicker">'+
             '<div class="picker-trigger" id="qvHostsTrigger" tabindex="0">'+
               '<span class="picker-placeholder" id="qvHostsPlaceholder">Select hosts…</span>'+
@@ -175,13 +168,26 @@ async function showProblemDashList(){
               '<div class="picker-list" id="qvHostsList"></div>'+
             '</div>'+
           '</div></div>'+
+        '<div class="field qv-prob-sev"><label for="qvSev">Min severity</label>'+
+          '<select id="qvSev">'+sevOpts+'</select></div>'+
+        '<div class="field qv-prob-status"><label for="qvProbStatus">Status</label>'+
+          '<select id="qvProbStatus">'+problemStatusOptions((probState.quick&&probState.quick.status)||'open')+'</select></div>'+
+        '<div class="field qv-prob-actions"><label class="qv-actions-spacer">&nbsp;</label>'+
+          '<div class="qv-prob-btns">'+
+            '<button class="btn btn-primary" id="qvRunBtn"><span class="spinner"></span><span class="btn-label">Show problems</span></button>'+
+            '<button type="button" class="btn btn-ghost" id="qvClearBtn" title="Clear host and group selection">Clear</button>'+
+          '</div></div>'+
       '</div>'+
-      '<div id="qvResults" style="margin-top:12px;"></div>'+
+      '<div class="qv-status-line qv-status-compact"><span class="status-msg" id="qvStatus" style="display:none;"></span><span class="prob-count" id="qvCount"></span></div>'+
+      '<div id="qvResults" style="margin-top:6px;"></div>'+
     '</div>'+
-    // ---- Saved dashboards ----
-    '<div class="eyebrow" style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;">'+
-      '<span>Saved dashboards</span>'+
-      (canManage() ? '<button type="button" class="btn btn-ghost" id="pdashImportBtn" style="height:26px;padding:0 10px;font-size:11px;">Import JSON</button>' : '')+
+    // ---- Saved views ----
+    '<div class="eyebrow dash-list-head" style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'+
+      '<span>Saved views</span>'+
+      '<span class="dash-list-head-actions">'+
+        (canManage() ? '<button type="button" class="btn btn-primary" id="emptyNewProbBtnTop" style="height:30px;padding:0 12px;font-size:12px;">+ New view</button>' : '')+
+        (canManage() ? '<button type="button" class="btn btn-ghost" id="pdashImportBtn" style="height:30px;padding:0 10px;font-size:12px;">Import JSON</button>' : '')+
+      '</span>'+
     '</div>'+
     recentStripHtml('pdash', recents, existingIds)+
     (list.length > 1 ? '<div class="list-toolbar">'+
@@ -196,7 +202,7 @@ async function showProblemDashList(){
           icon: '!',
           title: 'No problem views saved yet',
           body: canManage()
-            ? 'Save a host/group scope for one-click problem refresh, or use Quick view above.'
+            ? 'Save a host/group scope as a view for one-click problem refresh, or use Quick view above.'
             : 'No problem views have been shared with you yet. Use Quick view above anytime.',
           actionsHtml: canManage()
             ? '<div class="es-actions"><button type="button" class="btn btn-primary" id="emptyNewProbBtn">New problem view</button></div>'
@@ -205,9 +211,10 @@ async function showProblemDashList(){
       : '')+
     '<div class="dash-list" id="pdashListGrid">'+cards+
       (canManage() && list.length > 0 ?
-      '<div class="new-dash-card" id="newProbDashCard">'+
-        '<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'+
-        'New dashboard'+
+      '<div class="new-dash-card" id="newProbDashCard" role="button" tabindex="0">'+
+        '<div class="new-dash-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div>'+
+        '<div class="new-dash-title">New view</div>'+
+        '<div class="new-dash-sub">Save a host/group problem scope</div>'+
       '</div>' : '')+
     '</div>';
 
@@ -229,6 +236,8 @@ async function showProblemDashList(){
   if(newProbDashCard) newProbDashCard.addEventListener('click', function(){ openProblemBuilder(null); });
   const emptyNewProbBtn = document.getElementById('emptyNewProbBtn');
   if(emptyNewProbBtn) emptyNewProbBtn.addEventListener('click', function(){ openProblemBuilder(null); });
+  const emptyNewProbBtnTop = document.getElementById('emptyNewProbBtnTop');
+  if(emptyNewProbBtnTop) emptyNewProbBtnTop.addEventListener('click', function(){ openProblemBuilder(null); });
 
   const importBtn = document.getElementById('pdashImportBtn');
   if(importBtn) importBtn.addEventListener('click', function(){
@@ -261,23 +270,40 @@ async function showProblemDashList(){
     return d ? d.name : '';
   }
   function wireCardActions(){
-    root.querySelectorAll('[data-act="run"]').forEach(function(b){
-      b.addEventListener('click', function(){
-        pushRecent('pdash', b.dataset.id, cardNameFor(b.dataset.id));
-        openProblemRun(b.dataset.id);
+    function runView(id){
+      if(!id) return;
+      pushRecent('pdash', id, cardNameFor(id));
+      openProblemRun(id);
+    }
+    root.querySelectorAll('.dash-card-clickable').forEach(function(card){
+      card.addEventListener('click', function(e){
+        if(e.target.closest && e.target.closest('.dash-card-tools, .card-more-menu, .pin-btn, .card-more-btn')) return;
+        runView(card.dataset.id);
+      });
+      card.addEventListener('keydown', function(e){
+        if(e.key === 'Enter' || e.key === ' '){
+          e.preventDefault();
+          runView(card.dataset.id);
+        }
       });
     });
+    root.querySelectorAll('[data-act="run"]').forEach(function(b){
+      if(b.classList.contains('dash-card-clickable')) return;
+      b.addEventListener('click', function(){ runView(b.dataset.id); });
+    });
     root.querySelectorAll('[data-act="edit"]').forEach(function(b){
-      b.addEventListener('click', async function(){
+      b.addEventListener('click', async function(e){
+        e.stopPropagation();
         const res = await apiFetch('/api/problem-dashboards/'+b.dataset.id);
-        if(!res.ok){ showToast('Failed to load problem dashboard.', { type: 'warn' }); return; }
+        if(!res.ok){ showToast('Failed to load problem view.', { type: 'warn' }); return; }
         const d = await res.json();
         pushRecent('pdash', d.id, d.name);
         openProblemBuilder(d);
       });
     });
     root.querySelectorAll('[data-act="dup"]').forEach(function(b){
-      b.addEventListener('click', async function(){
+      b.addEventListener('click', async function(e){
+        e.stopPropagation();
         try{
           const res = await apiFetch('/api/problem-dashboards/'+b.dataset.id);
           if(!res.ok) throw new Error('HTTP '+res.status);
@@ -292,15 +318,16 @@ async function showProblemDashList(){
           });
           if(!created.ok){
             const err = await created.json().catch(function(){ return {}; });
-            throw new Error(err.detail || ('HTTP '+created.status));
+            throw new Error(formatApiDetail(err.detail, 'HTTP '+created.status));
           }
-          showToast('Problem dashboard duplicated (as a private copy).', { type: 'success' });
+          showToast('Problem view duplicated (as a private copy).', { type: 'success' });
           showProblemDashList();
         }catch(err){ showToast('Duplicate failed: '+(err.message||err), { type: 'warn' }); }
       });
     });
     root.querySelectorAll('[data-act="export"]').forEach(function(b){
-      b.addEventListener('click', async function(){
+      b.addEventListener('click', async function(e){
+        e.stopPropagation();
         try{
           const res = await apiFetch('/api/problem-dashboards/'+b.dataset.id);
           if(!res.ok) throw new Error('HTTP '+res.status);
@@ -320,22 +347,48 @@ async function showProblemDashList(){
       });
     });
     root.querySelectorAll('[data-act="delete"]').forEach(function(b){
-      b.addEventListener('click', async function(){
-        const ok = await confirmModal('Delete this problem dashboard? This cannot be undone.', { title: 'Delete problem dashboard' });
+      b.addEventListener('click', async function(e){
+        e.stopPropagation();
+        const ok = await confirmModal('Delete this problem view? This cannot be undone.', { title: 'Delete problem view' });
         if(!ok) return;
         try{
           const res = await apiFetch('/api/problem-dashboards/'+b.dataset.id, { method:'DELETE' });
           if(!res.ok){
             const err = await res.json().catch(function(){ return {}; });
-            throw new Error(err.detail || ('HTTP '+res.status));
+            throw new Error(formatApiDetail(err.detail, 'HTTP '+res.status));
           }
-          showToast('Problem dashboard deleted.');
+          showToast('Problem view deleted.');
           showProblemDashList();
         }catch(err){ showToast('Delete failed: '+(err.message||err), { type: 'warn' }); }
       });
     });
   }
   wireCardActions();
+
+  // ··· more menu on problem view cards
+  root.querySelectorAll('.card-more-btn').forEach(function(btn){
+    btn.addEventListener('click', function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      const menu = btn.parentElement && btn.parentElement.querySelector('.card-more-menu');
+      if(!menu) return;
+      const willOpen = menu.hidden;
+      root.querySelectorAll('.card-more-menu').forEach(function(m){ m.hidden = true; });
+      root.querySelectorAll('.card-more-btn').forEach(function(b){ b.setAttribute('aria-expanded','false'); });
+      if(willOpen){
+        menu.hidden = false;
+        btn.setAttribute('aria-expanded','true');
+      }
+    });
+  });
+  if(root._probMoreCloser) document.removeEventListener('click', root._probMoreCloser);
+  root._probMoreCloser = function(e){
+    if(e.target.closest && e.target.closest('.card-more')) return;
+    root.querySelectorAll('.card-more-menu').forEach(function(m){ m.hidden = true; });
+    root.querySelectorAll('.card-more-btn').forEach(function(b){ b.setAttribute('aria-expanded','false'); });
+  };
+  document.addEventListener('click', root._probMoreCloser);
 
   root.querySelectorAll('[data-recent-id]').forEach(function(chip){
     chip.addEventListener('click', function(){
@@ -351,10 +404,33 @@ async function showProblemDashList(){
     const f = searchInput.value.trim().toLowerCase();
     const filtered = !f ? list.slice() : list.filter(function(d){ return (d.name||'').toLowerCase().includes(f); });
     const grid = document.getElementById('pdashListGrid');
+    const newCardHtml = canManage() && list.length > 0
+      ? '<div class="new-dash-card" id="newProbDashCard" role="button" tabindex="0">'+
+          '<div class="new-dash-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div>'+
+          '<div class="new-dash-title">New view</div>'+
+          '<div class="new-dash-sub">Save a host/group problem scope</div>'+
+        '</div>'
+      : '';
+    grid.innerHTML = renderCards(sortList(filtered)) + newCardHtml;
     const newCard = document.getElementById('newProbDashCard');
-    grid.innerHTML = renderCards(sortList(filtered));
-    if(newCard) grid.appendChild(newCard);
+    if(newCard) newCard.addEventListener('click', function(){ openProblemBuilder(null); });
     wireCardActions();
+    root.querySelectorAll('.card-more-btn').forEach(function(btn){
+      btn.addEventListener('click', function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        const menu = btn.parentElement && btn.parentElement.querySelector('.card-more-menu');
+        if(!menu) return;
+        const willOpen = menu.hidden;
+        root.querySelectorAll('.card-more-menu').forEach(function(m){ m.hidden = true; });
+        root.querySelectorAll('.card-more-btn').forEach(function(b){ b.setAttribute('aria-expanded','false'); });
+        if(willOpen){
+          menu.hidden = false;
+          btn.setAttribute('aria-expanded','true');
+        }
+      });
+    });
   }
   if(searchInput) searchInput.addEventListener('input', applyFilter);
   if(sortSelect) sortSelect.addEventListener('change', applyFilter);
@@ -408,26 +484,19 @@ function wireQuickView(){
   function renderQvHostTrigger(){
     const trigger = document.getElementById('qvHostsTrigger');
     const placeholder = document.getElementById('qvHostsPlaceholder');
-    if(!trigger) return;
+    if(!trigger || !placeholder) return;
+    // Compact summary only — never expand into per-host pills
     trigger.querySelectorAll('.pill').forEach(function(p){ p.remove(); });
-    if(!q.hostids.length){ placeholder.style.display = ''; return; }
-    placeholder.style.display = 'none';
-    q.hostids.forEach(function(hostid){
-      const hid = parseInt(hostid, 10);
-      const h = (probState.hosts||[]).find(function(x){ return parseInt(x.hostid,10)===hid; });
-      const pill = document.createElement('span');
-      pill.className = 'pill';
-      pill.innerHTML = (h ? (h.name||h.host) : hid)+
-        ' <button type="button" aria-label="Remove">'+
-        '<svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M6 6L18 18M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>';
-      pill.querySelector('button').addEventListener('click', function(e){
-        e.stopPropagation();
-        q.hostids = q.hostids.filter(function(id){ return parseInt(id,10)!==hid; });
-        renderQvHostTrigger();
-        renderQvHostOptions(document.getElementById('qvHostsSearch')?.value || '');
-      });
-      trigger.insertBefore(pill, trigger.querySelector('.picker-chevron'));
-    });
+    const n = (q.hostids || []).length;
+    if(!n){
+      placeholder.style.display = '';
+      placeholder.textContent = 'Select hosts…';
+      placeholder.classList.remove('picker-summary');
+      return;
+    }
+    placeholder.style.display = '';
+    placeholder.classList.add('picker-summary');
+    placeholder.textContent = n === 1 ? '1 host selected' : (n + ' hosts selected');
   }
 
   renderQvHostOptions();
@@ -443,25 +512,49 @@ function wireQuickView(){
   });
   document.getElementById('qvHostsSearch').addEventListener('input', function(e){ renderQvHostOptions(e.target.value); });
 
-  document.getElementById('qvLoadGroupBtn').addEventListener('click', async function(){
-    const gid = document.getElementById('qvGroup').value;
-    const status = document.getElementById('qvStatus');
-    if(!gid){ status.textContent = 'Pick a host group first.'; status.className='status-msg warn'; return; }
-    status.textContent = 'Loading hosts…'; status.className='status-msg';
+  async function loadHostsForGroup(gid){
+    if(!gid){
+      q.groupid = null;
+      return;
+    }
     try{
       const res = await apiFetch('/api/hostgroups/'+gid+'/hosts');
       if(!res.ok) throw new Error('HTTP '+res.status);
       const hosts = await res.json();
       q.groupid = parseInt(gid, 10);
       q.hostids = hosts.map(function(h){ return parseInt(h.hostid, 10); });
-      renderQvHostOptions();
+      renderQvHostOptions(document.getElementById('qvHostsSearch')?.value || '');
       renderQvHostTrigger();
-      status.textContent = 'Loaded '+q.hostids.length+' hosts.';
+      // Brief corner toast only — host count is already in the Hosts control
+      if(typeof showToast === 'function'){
+        showToast('Loaded '+q.hostids.length+' host'+(q.hostids.length===1?'':'s')+' from group.', { type: 'success' });
+      }
     }catch(err){
-      status.textContent = 'Failed: '+(err.message||err);
-      status.className='status-msg warn';
+      if(typeof showToast === 'function'){
+        showToast('Failed to load hosts: '+(err.message||err), { type: 'warn' });
+      }
     }
-  });
+  }
+
+  // Auto-load hosts when host group changes (no manual Load hosts button)
+  const qvGroupEl = document.getElementById('qvGroup');
+  if(qvGroupEl){
+    qvGroupEl.addEventListener('change', function(){
+      const gid = qvGroupEl.value;
+      if(!gid){
+        q.groupid = null;
+        // Don't wipe hostids on clear-of-group alone — user may still want them
+        const status = document.getElementById('qvStatus');
+        if(status){ status.textContent = ''; status.className = 'status-msg'; }
+        return;
+      }
+      loadHostsForGroup(gid);
+    });
+    // If a group was restored from localStorage, auto-load its hosts once
+    if(q.groupid && (!q.hostids || !q.hostids.length)){
+      loadHostsForGroup(String(q.groupid));
+    }
+  }
 
   const qvClearBtn = document.getElementById('qvClearBtn');
   if(qvClearBtn) qvClearBtn.addEventListener('click', function(){
@@ -523,6 +616,8 @@ function wireQuickView(){
 
     const sevs = (function(){ const m = min_severity||0; const a=[]; for(let i=m;i<=5;i++) a.push(i); return a; })();
     const exportScope = {
+      name: 'Quick view',
+      title: 'Quick view',
       hostids: hostids, groupid: groupid, min_severity: min_severity,
       status: probStatus, ack: 'all', severities: sevs.length ? sevs : null,
       include_suppressed: true,
@@ -535,11 +630,11 @@ function wireQuickView(){
       });
       if(!res.ok){
         const err = await res.json().catch(function(){ return {}; });
-        throw new Error(err.detail || ('HTTP '+res.status));
+        throw new Error(formatApiDetail(err.detail, 'HTTP '+res.status));
       }
       const data = await res.json();
       const problems = data.problems || [];
-      countEl.textContent = problems.length + ' problem'+(problems.length===1?'':'s');
+      if(countEl) countEl.textContent = ''; // severity strip shows totals
       trackNewProblems('qv-problems', problems);
       if(!problems.length){
         results.innerHTML = emptyResultHtml({
@@ -554,7 +649,7 @@ function wireQuickView(){
           if(dres.ok) results.innerHTML += renderDiagPanel(await dres.json());
         }catch(e){ /* ignore */ }
       } else {
-        results.innerHTML = computeSeverityChips(problems) + renderAgeTimeline(problems) + renderProblemsTable(problems);
+        results.innerHTML = computeSeverityChips(problems) + renderProblemsTable(problems);
         try{
           enhanceProblemsResults(results, problems, 'qv-problems', function(){
             const b = document.getElementById('qvRunBtn');
@@ -587,25 +682,31 @@ async function openProblemBuilder(existing){
         name: existing.name,
         hostids: (existing.hostids||[]).map(function(id){ return parseInt(id,10); }),
         groupid: existing.groupid || null,
+        selectedGroupIds: Array.isArray(existing.selectedGroupIds)
+          ? existing.selectedGroupIds.map(function(id){ return parseInt(id,10); }).filter(Boolean)
+          : (existing.groupid ? [parseInt(existing.groupid,10)] : []),
         min_severity: existing.min_severity || 0,
         status: existing.status || 'open',
         is_shared: !!existing.is_shared,
         shared_userids: existing.shared_userids || [],
         shared_usrgrpids: existing.shared_usrgrpids || [],
       }
-    : { id: null, name: '', hostids: [], groupid: null, min_severity: 0, status: 'open', is_shared: false, shared_userids: [], shared_usrgrpids: [] };
+    : { id: null, name: '', hostids: [], groupid: null, selectedGroupIds: [], min_severity: 0, status: 'open', is_shared: false, shared_userids: [], shared_usrgrpids: [] };
+  // Load Zabbix users/groups before first paint (same as metrics builder)
+  try{
+    await loadShareDirectories();
+  }catch(e){
+    console.warn('share directories', e);
+  }
   renderProblemBuilder();
 }
 
 function renderProblemBuilder(){
   const b = probState.builder;
   const root = probRoot();
-  const groupOpts = ['<option value="">— optional: fill hosts from group —</option>'].concat(
-    (probState.groups||[]).map(function(g){
-      const sel = String(b.groupid||'') === String(g.groupid) ? ' selected' : '';
-      return '<option value="'+g.groupid+'"'+sel+'>'+g.name+' ('+g.host_count+')</option>';
-    })
-  ).join('');
+  if(!Array.isArray(b.selectedGroupIds)){
+    b.selectedGroupIds = b.groupid ? [parseInt(b.groupid,10)] : [];
+  }
   const sevOpts = [
     [0,'All severities'],[1,'Info+'],[2,'Warning+'],[3,'Average+'],[4,'High+'],[5,'Disaster only']
   ].map(function(p){
@@ -614,31 +715,28 @@ function renderProblemBuilder(){
 
   root.innerHTML =
     '<div class="filterbar">'+
-      /* Row 1: Name + share-all */
-      '<div class="builder-head">'+
-        '<div class="field" style="flex:1"><label for="probName">Name</label>'+
+      /* Row 1: Name + Users + User groups */
+      '<div class="builder-head builder-meta-row">'+
+        '<div class="field builder-field-name"><label for="probName">Name</label>'+
           '<input id="probName" placeholder="e.g. Core switches — open problems" value="'+String(b.name||'').replace(/"/g,'&quot;')+'"></div>'+
-        '<div class="field" style="flex:0 0 auto"><label>&nbsp;</label>'+
-          '<label style="display:flex;align-items:center;gap:6px;height:38px;font-size:12px;color:var(--text-dim);white-space:nowrap;">'+
-            '<input type="checkbox" id="probShared"'+(b.is_shared?' checked':'')+'> Shared with all users'+
-          '</label></div>'+
-      '</div>'+
-      /* Row 2: Users / User groups */
-      '<div class="field share-field">'+
         sharePickerHtml('probShare', b.shared_userids || [], b.shared_usrgrpids || [])+
       '</div>'+
-      /* Row 3: Host group + Load (source first) */
-      '<div class="builder-head" style="margin-top:4px;">'+
-        '<div class="field" style="flex:1.2"><label for="probGroup">Host group</label>'+
-          '<select id="probGroup">'+groupOpts+'</select></div>'+
-        '<div class="field" style="flex:0 0 auto"><label>&nbsp;</label>'+
-          '<button type="button" class="btn btn-ghost" id="probLoadGroupBtn" style="height:38px;">Load hosts from group</button></div>'+
-      '</div>'+
-      /* Row 4: Hosts full-width so many pills wrap cleanly */
-      '<div class="builder-head" style="margin-top:0;">'+
-        '<div class="field" style="flex:1;min-width:100%;"><label for="probHostsTrigger">Hosts</label>'+
+      /* Row 3: Host groups (multi) + Load + Hosts compact */
+      '<div class="row builder-scope-row">'+
+        '<div class="field builder-field-groups"><label>Host groups</label>'+
+          '<div class="picker" id="probGroupsPicker">'+
+            '<div class="picker-trigger" id="probGroupsTrigger" tabindex="0">'+
+              '<span class="picker-placeholder" id="probGroupsPlaceholder">Select host groups…</span>'+
+              '<svg class="picker-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
+            '</div>'+
+            '<div class="picker-panel" id="probGroupsPanel">'+
+              '<input class="picker-search" id="probGroupsSearch" placeholder="Filter groups…" autocomplete="off">'+
+              '<div class="picker-list" id="probGroupsList"></div>'+
+            '</div>'+
+          '</div></div>'+
+        '<div class="field builder-field-hosts"><label>Hosts</label>'+
           '<div class="picker" id="probHostsPicker">'+
-            '<div class="picker-trigger" id="probHostsTrigger" tabindex="0">'+
+            '<div class="picker-trigger picker-trigger-compact" id="probHostsTrigger" tabindex="0">'+
               '<span class="picker-placeholder" id="probHostsPlaceholder">Select hosts…</span>'+
               '<svg class="picker-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
             '</div>'+
@@ -648,7 +746,7 @@ function renderProblemBuilder(){
             '</div>'+
           '</div></div>'+
       '</div>'+
-      /* Row 5: Min severity + Status */
+      /* Row 4: Min severity + Status */
       '<div class="builder-head" style="margin-top:0;">'+
         '<div class="field" style="flex:0 0 200px;"><label for="probSev">Min severity</label>'+
           '<select id="probSev">'+sevOpts+'</select></div>'+
@@ -658,53 +756,188 @@ function renderProblemBuilder(){
       '<div class="col-label-hint">Pick a host group and/or hosts, set a minimum severity, then save. Run anytime to refresh open problems.</div>'+
       '<div class="actions-row">'+
         '<button class="btn btn-primary" id="probSaveBtn">Save dashboard</button>'+
+        '<button type="button" class="btn btn-ghost" id="probPreviewBtn">Preview</button>'+
         '<button class="btn btn-ghost" id="probCancelBtn" type="button">Cancel</button>'+
         '<span class="status-msg" id="probStatusMsg"></span>'+
       '</div>'+
+      '<div class="builder-preview" id="probBuilderPreview" hidden></div>'+
     '</div>';
 
   renderProbHostOptions();
   renderProbHostTrigger();
 
   document.getElementById('probHostsTrigger').addEventListener('click', function(){
-    const panel = document.getElementById('probHostsPanel');
-    const trigger = document.getElementById('probHostsTrigger');
-    const open = !panel.classList.contains('open');
-    panel.classList.toggle('open', open);
-    trigger.classList.toggle('open', open);
-    if(open) document.getElementById('probHostsSearch').focus();
+    toggleProbPicker('probHostsTrigger', 'probHostsPanel', 'probHostsSearch');
   });
   document.getElementById('probHostsSearch').addEventListener('input', function(e){ renderProbHostOptions(e.target.value); });
 
-  document.getElementById('probLoadGroupBtn').addEventListener('click', async function(){
-    const gid = document.getElementById('probGroup').value;
-    const status = document.getElementById('probStatus');
-    if(!gid){ status.textContent = 'Pick a host group first.'; status.className='status-msg warn'; return; }
-    status.textContent = 'Loading hosts…'; status.className='status-msg';
-    try{
-      const res = await apiFetch('/api/hostgroups/'+gid+'/hosts');
-      if(!res.ok) throw new Error('HTTP '+res.status);
-      const hosts = await res.json();
-      b.groupid = parseInt(gid, 10);
-      b.hostids = hosts.map(function(h){ return parseInt(h.hostid, 10); });
-      renderProbHostOptions();
-      renderProbHostTrigger();
-      status.textContent = 'Loaded '+b.hostids.length+' hosts from group.';
-    }catch(err){
-      status.textContent = 'Failed to load hosts: '+(err.message||err);
-      status.className='status-msg warn';
+  renderProbGroupOptions();
+  renderProbGroupTrigger();
+
+  function toggleProbPicker(triggerId, panelId, searchId){
+    const panel = document.getElementById(panelId);
+    const trigger = document.getElementById(triggerId);
+    if(!panel || !trigger) return;
+    const open = !panel.classList.contains('open');
+    if(typeof closeAllOpenPickers === 'function') closeAllOpenPickers(open ? panel : null);
+    else {
+      document.querySelectorAll('.picker-panel').forEach(function(p){ p.classList.remove('open'); p.style.display = ''; });
+      document.querySelectorAll('.picker-trigger').forEach(function(t){ t.classList.remove('open'); });
     }
+    if(open){
+      panel.classList.add('open');
+      panel.style.display = 'block';
+      trigger.classList.add('open');
+      const s = document.getElementById(searchId);
+      if(s) s.focus();
+    }
+  }
+
+  document.getElementById('probGroupsTrigger').addEventListener('click', function(){
+    toggleProbPicker('probGroupsTrigger', 'probGroupsPanel', 'probGroupsSearch');
   });
-  document.getElementById('probGroup').addEventListener('change', function(e){
-    b.groupid = e.target.value ? parseInt(e.target.value, 10) : null;
+  document.getElementById('probGroupsSearch').addEventListener('input', function(e){
+    renderProbGroupOptions(e.target.value);
   });
+
   document.getElementById('probSev').addEventListener('change', function(e){
     b.min_severity = parseInt(e.target.value, 10) || 0;
   });
+  const statusSel = document.getElementById('probStatus');
+  if(statusSel){
+    statusSel.addEventListener('change', function(e){
+      b.status = e.target.value || 'open';
+    });
+  }
   document.getElementById('probSaveBtn').addEventListener('click', saveProblemDashboard);
+  document.getElementById('probPreviewBtn').addEventListener('click', previewProblemBuilder);
   document.getElementById('probCancelBtn').addEventListener('click', showProblemDashList);
   wireShareRetry('probShare', renderProblemBuilder);
   wireSharePicker('probShare');
+}
+
+
+function renderProbGroupOptions(filter){
+  const list = document.getElementById('probGroupsList');
+  const b = probState.builder;
+  if(!list || !b) return;
+  if(!Array.isArray(b.selectedGroupIds)) b.selectedGroupIds = [];
+  const f = (filter||'').trim().toLowerCase();
+  const selected = new Set(b.selectedGroupIds.map(function(id){ return parseInt(id,10); }));
+  const groups = probState.groups || dashState.allGroups || [];
+  const rows = groups.filter(function(g){
+    const label = String(g.name||g.groupid||'');
+    return !f || label.toLowerCase().includes(f);
+  });
+  list.innerHTML = rows.length ? rows.map(function(g){
+    const gid = parseInt(g.groupid,10);
+    const on = selected.has(gid);
+    const cnt = g.host_count;
+    const label = escHtml(g.name||('Group '+gid))+(cnt!=null ? ' ('+cnt+')' : '');
+    return '<label class="picker-option">'+
+      '<input type="checkbox" data-groupid="'+gid+'"'+(on?' checked':'')+'>'+
+      '<div class="opt-main"><div class="opt-name">'+label+'</div></div></label>';
+  }).join('') : '<div class="picker-empty">No groups match.</div>';
+  list.querySelectorAll('input[type=checkbox]').forEach(function(cb){
+    cb.addEventListener('change', async function(){
+      const gid = parseInt(cb.getAttribute('data-groupid'),10);
+      if(cb.checked){
+        if(b.selectedGroupIds.indexOf(gid) < 0) b.selectedGroupIds.push(gid);
+      } else {
+        b.selectedGroupIds = b.selectedGroupIds.filter(function(id){ return parseInt(id,10) !== gid; });
+      }
+      // Keep legacy groupid in sync for single-group case
+      b.groupid = b.selectedGroupIds.length === 1 ? b.selectedGroupIds[0] : null;
+      renderProbGroupOptions(document.getElementById('probGroupsSearch')?.value||'');
+      renderProbGroupTrigger();
+      await loadProbHostsFromGroups();
+    });
+  });
+}
+
+function renderProbGroupTrigger(){
+  const ph = document.getElementById('probGroupsPlaceholder');
+  const b = probState.builder;
+  if(!ph || !b) return;
+  if(!Array.isArray(b.selectedGroupIds)) b.selectedGroupIds = [];
+  const n = b.selectedGroupIds.length;
+  if(!n){
+    ph.textContent = 'Select host groups…';
+    ph.classList.remove('picker-summary');
+    return;
+  }
+  const groups = probState.groups || dashState.allGroups || [];
+  const selected = groups.filter(function(g){
+    return b.selectedGroupIds.indexOf(parseInt(g.groupid,10)) >= 0;
+  });
+  const names = selected.map(function(g){
+    const cnt = g.host_count;
+    return (g.name||g.groupid)+(cnt!=null ? ' ('+cnt+')' : '');
+  });
+  ph.textContent = n === 1 ? names[0] : (n+' groups selected');
+  ph.title = names.join(', ');
+  ph.classList.add('picker-summary');
+}
+
+async function loadProbHostsFromGroups(){
+  const b = probState.builder;
+  // Note: #probStatus is the Status <select> in the builder — never use it as a message target
+  const status = document.getElementById('probStatusMsg') || document.getElementById('probBuilderStatus');
+  if(!b) return;
+  if(!Array.isArray(b.selectedGroupIds)) b.selectedGroupIds = [];
+  const gids = b.selectedGroupIds.slice();
+  if(!gids.length){
+    b.hostids = [];
+    renderProbHostOptions();
+    renderProbHostTrigger();
+    if(status){ status.textContent = ''; status.className = 'status-msg'; }
+    return;
+  }
+  if(status){
+    status.textContent = 'Loading hosts from '+gids.length+' group'+(gids.length===1?'':'s')+'…';
+    status.className = 'status-msg';
+  }
+  try{
+    const results = await Promise.all(gids.map(function(gid){
+      return apiFetch('/api/hostgroups/'+gid+'/hosts').then(function(res){
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        return res.json();
+      });
+    }));
+    const seen = {};
+    const hostids = [];
+    const hostObjs = [];
+    results.forEach(function(hosts){
+      (hosts||[]).forEach(function(h){
+        const id = parseInt(h.hostid,10);
+        if(!seen[id]){
+          seen[id] = true;
+          hostids.push(id);
+          hostObjs.push(h);
+        }
+      });
+    });
+    if(!probState.hosts) probState.hosts = [];
+    const known = {};
+    probState.hosts.forEach(function(h){ known[parseInt(h.hostid,10)] = true; });
+    hostObjs.forEach(function(h){
+      const id = parseInt(h.hostid,10);
+      if(!known[id]) probState.hosts.push(h);
+    });
+    b.hostids = hostids;
+    b.groupid = gids.length === 1 ? gids[0] : null;
+    renderProbHostOptions();
+    renderProbHostTrigger();
+    if(status){
+      status.textContent = 'Loaded '+hostids.length+' host'+(hostids.length===1?'':'s')+' from '+gids.length+' group'+(gids.length===1?'':'s')+'.';
+      status.className = 'status-msg';
+    }
+  }catch(err){
+    if(status){
+      status.textContent = 'Failed to load hosts: '+(err.message||err);
+      status.className = 'status-msg warn';
+    }
+  }
 }
 
 function renderProbHostOptions(filter){
@@ -747,36 +980,128 @@ function renderProbHostTrigger(){
   if(!trigger || !probState.builder) return;
   trigger.querySelectorAll('.pill').forEach(function(p){ p.remove(); });
   const ids = probState.builder.hostids || [];
-  if(!ids.length){ placeholder.style.display = ''; return; }
-  placeholder.style.display = 'none';
-  ids.forEach(function(hostid){
-    const hid = parseInt(hostid, 10);
-    const h = (probState.hosts||[]).find(function(x){ return parseInt(x.hostid,10)===hid; });
-    const pill = document.createElement('span');
-    pill.className = 'pill';
-    pill.innerHTML = (h ? (h.name||h.host) : hid)+
-      ' <button type="button" aria-label="Remove">'+
-      '<svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M6 6L18 18M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>';
-    pill.querySelector('button').addEventListener('click', function(e){
-      e.stopPropagation();
-      probState.builder.hostids = probState.builder.hostids.filter(function(id){ return parseInt(id,10)!==hid; });
-      renderProbHostTrigger();
-      const search = document.getElementById('probHostsSearch');
-      renderProbHostOptions(search ? search.value : '');
+  if(!ids.length){
+    placeholder.style.display = '';
+    placeholder.textContent = 'Select hosts…';
+    placeholder.classList.remove('picker-summary');
+    placeholder.title = '';
+    return;
+  }
+  placeholder.style.display = '';
+  const n = ids.length;
+  if(n <= 3){
+    const names = ids.map(function(hostid){
+      const hid = parseInt(hostid,10);
+      const h = (probState.hosts||[]).find(function(x){ return parseInt(x.hostid,10)===hid; });
+      return h ? (h.name||h.host) : String(hid);
     });
-    trigger.insertBefore(pill, trigger.querySelector('.picker-chevron'));
-  });
+    placeholder.textContent = names.join(', ');
+  } else {
+    placeholder.textContent = n + ' hosts selected';
+  }
+  placeholder.title = ids.map(function(hostid){
+    const hid = parseInt(hostid,10);
+    const h = (probState.hosts||[]).find(function(x){ return parseInt(x.hostid,10)===hid; });
+    return h ? (h.name||h.host) : String(hid);
+  }).join(', ');
+  placeholder.classList.add('picker-summary');
+}
+
+
+async function previewProblemBuilder(){
+  const b = probState.builder;
+  const msg = document.getElementById('probStatusMsg') || document.getElementById('probBuilderStatus');
+  const previewEl = document.getElementById('probBuilderPreview');
+  if(!b || !previewEl) return;
+
+  b.min_severity = parseInt((document.getElementById('probSev')||{}).value, 10) || 0;
+  b.status = (document.getElementById('probStatus')||{}).value || 'open';
+  if(!Array.isArray(b.selectedGroupIds)) b.selectedGroupIds = [];
+  b.groupid = b.selectedGroupIds.length === 1 ? b.selectedGroupIds[0]
+    : (b.selectedGroupIds.length > 1 ? null : (b.groupid || null));
+
+  if(!b.hostids.length && !b.groupid){
+    if(msg){ msg.textContent = 'Select a host group or at least one host.'; msg.className = 'status-msg warn'; }
+    return;
+  }
+
+  if(msg){ msg.textContent = 'Running preview…'; msg.className = 'status-msg'; }
+  previewEl.hidden = false;
+  previewEl.innerHTML = loadingStateHtml('Preview problems…');
+
+  const min_severity = b.min_severity || 0;
+  const sevs = (function(){ const a=[]; for(let i=min_severity;i<=5;i++) a.push(i); return a; })();
+  const payload = {
+    hostids: b.hostids || [],
+    groupid: b.groupid || null,
+    min_severity: min_severity,
+    status: b.status || 'open',
+    ack: 'all',
+    severities: sevs,
+    include_suppressed: true,
+  };
+
+  try{
+    const res = await apiFetch('/api/problems', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    if(!res.ok){
+      const err = await res.json().catch(function(){ return {}; });
+      throw new Error(typeof formatApiDetail === 'function' ? formatApiDetail(err.detail, 'Preview failed') : (err.detail || 'Preview failed'));
+    }
+    const data = await res.json();
+    const problems = data.problems || [];
+    if(!problems.length){
+      previewEl.innerHTML =
+        '<div class="builder-preview-head">'+
+          '<span class="eyebrow" style="margin:0;">Preview</span>'+
+          '<button type="button" class="chip-btn" id="probPreviewClose">Close</button>'+
+        '</div>'+
+        emptyResultHtml({
+          title: 'No problems matched',
+          body: 'Nothing matched this scope and filters right now.',
+        });
+      const c0 = document.getElementById('probPreviewClose');
+      if(c0) c0.addEventListener('click', function(){ previewEl.hidden = true; previewEl.innerHTML = ''; });
+      if(msg){ msg.textContent = ''; msg.className = 'status-msg'; }
+      return;
+    }
+    previewEl.innerHTML =
+      '<div class="builder-preview-head">'+
+        '<span class="eyebrow" style="margin:0;">Preview · ' + problems.length + ' problem'+(problems.length===1?'':'s')+'</span>'+
+        '<button type="button" class="chip-btn" id="probPreviewClose">Close</button>'+
+      '</div>'+
+      (typeof computeSeverityChips === 'function' ? computeSeverityChips(problems) : '') +
+      renderProblemsTable(problems);
+    const closeBtn = document.getElementById('probPreviewClose');
+    if(closeBtn) closeBtn.addEventListener('click', function(){ previewEl.hidden = true; previewEl.innerHTML = ''; });
+    try{
+      if(typeof enhanceProblemsResults === 'function'){
+        enhanceProblemsResults(previewEl, problems, 'prob-preview', function(){ previewProblemBuilder(); }, payload);
+      }
+    }catch(e){ console.warn(e); }
+    if(msg){ msg.textContent = 'Preview ready.'; msg.className = 'status-msg'; }
+    previewEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }catch(err){
+    previewEl.innerHTML = errorStateHtml({
+      title: 'Preview failed',
+      body: err.message || String(err),
+    });
+    if(msg){ msg.textContent = err.message || String(err); msg.className = 'status-msg warn'; }
+  }
 }
 
 async function saveProblemDashboard(){
   const b = probState.builder;
   b.name = document.getElementById('probName').value.trim();
   b.min_severity = parseInt(document.getElementById('probSev').value, 10) || 0;
-  const gval = document.getElementById('probGroup').value;
-  b.groupid = gval ? parseInt(gval, 10) : null;
+  if(!Array.isArray(b.selectedGroupIds)) b.selectedGroupIds = [];
+  // Persist single groupid for backend compatibility (first selected, or null when hosts already resolved)
+  b.groupid = b.selectedGroupIds.length === 1 ? b.selectedGroupIds[0]
+    : (b.selectedGroupIds.length > 1 ? null : (b.groupid || null));
   b.status = (document.getElementById('probStatus')||{}).value || 'open';
-  const sharedEl = document.getElementById('probShared');
-  b.is_shared = sharedEl ? !!sharedEl.checked : !!b.is_shared;
+  b.is_shared = !!b.is_shared;
   const msg = document.getElementById('probStatusMsg') || document.getElementById('probBuilderStatus');
 
   if(!b.name){ if(msg){ msg.textContent = 'Name your dashboard.'; msg.className='status-msg warn'; } return; }
@@ -819,30 +1144,56 @@ async function openProblemRun(dashId){
   probState.current = dashboard;
 
   root.innerHTML =
-    '<div class="filterbar">'+
-      '<div class="builder-head">'+
-        '<div><div class="eyebrow" style="margin-bottom:4px;">Problem dashboard</div>'+
-          '<h3 style="margin:0;font-size:16px;">'+dashboard.name+'</h3></div>'+
-        '<div class="actions-row" style="margin:0;">'+
-          '<button class="btn btn-primary" id="probRunBtn"><span class="spinner"></span><span class="btn-label">Refresh problems</span></button>'+
+    '<div class="filterbar prob-run-bar">'+
+      '<div class="prob-run-head">'+
+        '<div class="prob-run-title">'+
+          '<div class="eyebrow">Problem view</div>'+
+          '<h3>'+escHtml(dashboard.name)+'</h3>'+
+        '</div>'+
+        '<div class="prob-run-actions">'+
+          '<button class="btn btn-primary" id="probRunBtn"><span class="spinner"></span><span class="btn-label">Refresh</span></button>'+
           '<button class="btn btn-ghost" id="probBackBtn" type="button">Back</button>'+
-          '<span class="status-msg" id="probStatusMsg"></span>'+
-          '<span class="prob-count" id="probCount"></span>'+
         '</div>'+
       '</div>'+
-      '<div class="col-label-hint">Showing current open (unrecovered) problems for the saved host scope.</div>'+
     '</div>'+
-    '<div id="probResults" style="margin-top:18px;"></div>';
+    '<div id="probResults" class="prob-results"></div>';
 
   document.getElementById('probBackBtn').addEventListener('click', showProblemDashList);
   document.getElementById('probRunBtn').addEventListener('click', function(){ runProblemDashboard(dashboard); });
   runProblemDashboard(dashboard);
 }
 
+/**
+ * Split a long problem/trigger name into primary title + secondary context tag.
+ * e.g. "Cisco IOS: Switch 2 - Power Supply B, Shutdown: Power supply is in critical state"
+ *   → primary: "Power supply is in critical state"
+ *   → secondary: "Cisco IOS · Switch 2 - Power Supply B"
+ */
+function formatProblemHierarchy(raw){
+  const full = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+  if(!full) return { primary: '—', secondary: '' };
+  // Prefer text after the last ": " as the actionable issue title
+  const colonIdx = full.lastIndexOf(': ');
+  if(colonIdx > 0 && colonIdx < full.length - 2){
+    const secondary = full.slice(0, colonIdx).trim();
+    const primary = full.slice(colonIdx + 2).trim();
+    if(primary.length >= 8 && secondary.length >= 3){
+      return { primary: primary, secondary: secondary };
+    }
+  }
+  // Fallback: first clause before " - " if the rest is long
+  const dashIdx = full.indexOf(' - ');
+  if(dashIdx > 8 && full.length - dashIdx > 12){
+    return {
+      primary: full.slice(dashIdx + 3).trim(),
+      secondary: full.slice(0, dashIdx).trim()
+    };
+  }
+  return { primary: full, secondary: '' };
+}
+
 function renderAgeTimeline(problems){
   if(!problems || !problems.length) return '';
-  // Bucket open problems by age into 6 bands for a simple bar timeline
-  // min is inclusive lower bound (seconds); max is exclusive upper bound (Infinity for last)
   const bands = [
     { label: '<1h', min: 0, max: 3600 },
     { label: '1–6h', min: 3600, max: 21600 },
@@ -854,24 +1205,31 @@ function renderAgeTimeline(problems){
   const counts = bands.map(function(){ return 0; });
   problems.forEach(function(p){
     const age = parseInt(p.age_seconds, 10) || 0;
-    for(let i=0;i<bands.length;i++){
+    for(let i = 0; i < bands.length; i++){
       if(age >= bands[i].min && (bands[i].max === Infinity || age < bands[i].max)){
         counts[i]++; break;
       }
     }
   });
   const max = Math.max.apply(null, counts.concat([1]));
-  const bars = counts.map(function(c, i){
-    const h = Math.max(2, Math.round((c / max) * 36));
+  // Compact horizontal mini-bars inside a tight card
+  const rows = counts.map(function(c, i){
+    const pct = Math.max(c ? 6 : 0, Math.round((c / max) * 100));
     const maxAttr = bands[i].max === Infinity ? '' : String(bands[i].max);
-    return '<div class="age-bar'+(c?'':' is-empty')+'" role="button" tabindex="0"'+
+    const countHtml = c
+      ? '<span class="age-h-count">'+c+'</span>'
+      : '<span class="age-h-count is-empty">—</span>';
+    return '<div class="age-h-row'+(c ? '' : ' is-empty')+(c === max && c ? ' is-peak' : '')+'" role="button" tabindex="0"'+
       ' data-age-min="'+bands[i].min+'" data-age-max="'+maxAttr+'" data-age-label="'+bands[i].label+'"'+
-      ' title="Click to filter: '+bands[i].label+' ('+c+')">'+
-      '<div class="age-bar-fill" style="height:'+h+'px"></div>'+
-      '<div class="age-bar-label">'+bands[i].label+'</div>'+
-      '<div class="age-bar-count">'+c+'</div></div>';
+      ' title="Filter: '+bands[i].label+' ('+c+')">'+
+      '<span class="age-h-label">'+bands[i].label+'</span>'+
+      '<span class="age-h-track"><span class="age-h-fill" style="width:'+pct+'%"></span></span>'+
+      countHtml+
+    '</div>';
   }).join('');
-  return '<div class="age-timeline" title="Click a bar to filter the table by age">'+bars+'</div>';
+  return '<div class="age-timeline age-timeline-compact" title="Click a row to filter the table by age">'+
+    '<div class="age-timeline-title">Age distribution</div>'+
+    '<div class="age-h-list">'+rows+'</div></div>';
 }
 
 function renderProblemsTable(problems){
@@ -881,44 +1239,65 @@ function renderProblemsTable(problems){
       body: 'Nothing matched the current severity, status, or host filters. Try widening the criteria.',
     });
   }
-  return '<div class="pivot-wrap"><table class="problems-table">'+
+  return '<div class="pivot-wrap"><table class="problems-table problems-table-ref">'+
     '<thead><tr>'+
-      '<th style="width:28px;"><input type="checkbox" class="prob-check-all" title="Select all"></th>'+
-      '<th>Severity</th><th>Status</th><th>Ack</th><th>Host</th><th>Problem</th><th>Since</th><th>Age</th>'+
+      '<th class="no-sort" style="width:28px;"><input type="checkbox" class="prob-check-all" title="Select all"></th>'+
+      '<th>Severity</th>'+
+      '<th>Host</th>'+
+      '<th>Problem</th>'+
+      '<th>Duration</th>'+
+      '<th>Ack</th>'+
     '</tr></thead><tbody>'+
     problems.map(function(p){
       const sev = parseInt(p.severity, 10) || 0;
-      const host = escHtml(p.host_name || p.host || p.hostid);
-      const name = escHtml(String(p.problem_name || p.trigger_name || '—'));
-      const since = p.clock ? fmtTime(p.clock) : '—';
-      const age = formatAge(p.age_seconds);
-      const st = p.problem_status || (p.r_eventid == null ? 'Open' : 'Closed');
-      const ack = p.ack_status || (parseInt(p.acknowledged,10)===1 ? 'Acknowledged' : 'Unacknowledged');
-      const stCls = st === 'Open' ? 'sev-4' : 'sev-0';
-      const ackCls = ack === 'Acknowledged' ? 'sev-1' : 'sev-2';
+      const hostRaw = p.host_name || p.host || p.hostid || '';
+      const host = escHtml(hostRaw);
+      const parts = formatProblemHierarchy(p.problem_name || p.trigger_name || '—');
+      const primary = escHtml(parts.primary);
+      const secondary = parts.secondary
+        ? '<span class="prob-sub">'+escHtml(parts.secondary)+'</span>'
+        : '';
+      // Export-only problem text (primary + secondary, never severity)
+      const problemExport = parts.secondary
+        ? (parts.primary + ' — ' + parts.secondary)
+        : parts.primary;
+      const sevLabel = p.severity_label || (typeof SEV_LABELS !== 'undefined' ? SEV_LABELS[sev] : '') || String(sev);
+      const age = typeof formatAge === 'function' ? formatAge(p.age_seconds) : String(p.age_seconds || '');
+      const isClosed = (typeof isProblemOpen === 'function')
+        ? !isProblemOpen(p)
+        : (String(p.problem_status || '').toLowerCase() === 'closed' ||
+           !(p.r_eventid == null || p.r_eventid === 0 || p.r_eventid === '0'));
+      const durationText = isClosed ? 'Closed' : age;
+      const isAcked = (p.ack_status === 'Acknowledged') || (parseInt(p.acknowledged, 10) === 1);
+      const ackLabel = isAcked ? 'Yes' : 'No';
       const eid = p.eventid || '';
-      return '<tr data-eventid="'+eid+'" data-age-seconds="'+(parseInt(p.age_seconds,10)||0)+'">'+
-        '<td><input type="checkbox" class="prob-check" value="'+eid+'"></td>'+
-        '<td><span class="sev-badge sev-'+sev+'">'+(p.severity_label||sev)+'</span></td>'+
-        '<td><span class="sev-badge '+stCls+'">'+st+'</span></td>'+
-        '<td><span class="sev-badge '+ackCls+'">'+ack+'</span></td>'+
-        '<td class="host-cell">'+host+'</td>'+
-        '<td>'+name+'</td>'+
-        '<td style="white-space:nowrap;font-family:var(--mono);font-size:12px;">'+since+'</td>'+
-        '<td style="white-space:nowrap;font-family:var(--mono);font-size:12px;">'+age+'</td>'+
+      const selectedCls = ''; // toggled via checkbox handler
+      return '<tr data-eventid="'+eid+'" data-age-seconds="'+(parseInt(p.age_seconds,10)||0)+'" data-severity="'+sev+'" class="prob-row sev-row-'+sev+(isClosed?' is-closed':'')+'">'+
+        '<td class="prob-check-cell"><input type="checkbox" class="prob-check" value="'+eid+'"></td>'+
+        '<td class="sev-cell" data-export-text="'+escHtml(String(sevLabel))+'" data-export-tone="'+(sev>=4?'bad':(sev>=2?'warn':'ok'))+'">'+
+          '<span class="sev-inline sev-'+sev+'"><i class="sev-bar"></i>'+escHtml(String(sevLabel))+'</span></td>'+
+        '<td class="host-cell" data-export-text="'+escHtml(String(hostRaw))+'">'+host+'</td>'+
+        '<td class="prob-name-cell" data-export-text="'+escHtml(problemExport)+'">'+
+          '<div class="prob-primary">'+primary+'</div>'+
+          (secondary ? '<div class="prob-meta-row">'+secondary+'</div>' : '')+
+        '</td>'+
+        '<td class="prob-duration'+(isClosed?' is-closed':'')+'" data-export-text="'+escHtml(durationText)+'">'+escHtml(durationText)+'</td>'+
+        '<td class="prob-ack-cell" data-export-text="'+escHtml(ackLabel)+'" title="'+(isAcked ? 'Acknowledged' : 'Unacknowledged')+'">'+
+          '<span class="ack-pill '+(isAcked?'ack-yes':'ack-no')+'">'+ackLabel+'</span></td>'+
       '</tr>';
     }).join('')+
     '</tbody></table></div>';
 }
 
 async function runProblemDashboard(dashboard){
-  const status = document.getElementById('probStatus');
-  const countEl = document.getElementById('probCount');
+  // Prefer dedicated message slots — never the builder's Status <select>
+  const status = document.getElementById('probRunStatus')
+    || document.getElementById('probStatusMsg')
+    || document.querySelector('#probResults ~ .status-msg, .status-msg#probStatusMsg');
   const results = document.getElementById('probResults');
   const btn = document.getElementById('probRunBtn');
   if(btn){ btn.classList.add('loading'); btn.disabled = true; }
-  if(status){ status.textContent = ''; status.className = 'status-msg'; }
-  if(countEl) countEl.textContent = '';
+  if(status && status.tagName !== 'SELECT'){ status.textContent = ''; status.className = 'status-msg'; }
   if(results) results.innerHTML = loadingStateHtml('Fetching problems…');
 
   try{
@@ -929,7 +1308,6 @@ async function runProblemDashboard(dashboard){
     }
     const data = await res.json();
     const problems = data.problems || [];
-    if(countEl) countEl.textContent = problems.length + ' open problem'+(problems.length===1?'':'s');
     trackNewProblems('pdash-'+dashboard.id, problems);
     if(results){
       if(!problems.length){
@@ -949,8 +1327,10 @@ async function runProblemDashboard(dashboard){
           if(dres.ok) results.innerHTML += renderDiagPanel(await dres.json());
         }catch(e){ /* ignore */ }
       } else {
-        results.innerHTML = computeSeverityChips(problems) + renderAgeTimeline(problems) + renderProblemsTable(problems);
+        results.innerHTML = computeSeverityChips(problems) + renderProblemsTable(problems);
         const exportScope = {
+          name: dashboard.name || 'Problems',
+          title: dashboard.name || 'Problems',
           hostids: dashboard.hostids || [],
           groupid: dashboard.groupid || null,
           min_severity: dashboard.min_severity || 0,
@@ -972,7 +1352,7 @@ async function runProblemDashboard(dashboard){
     }
     probState.lastResult = data;
   }catch(err){
-    if(status){ status.textContent = ''; status.className='status-msg'; }
+    if(status && status.tagName !== 'SELECT'){ status.textContent = ''; status.className='status-msg'; }
     if(results){
       results.innerHTML = errorStateHtml({
         title: 'Could not load problems',

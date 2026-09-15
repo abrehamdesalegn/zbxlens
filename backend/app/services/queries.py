@@ -1,4 +1,4 @@
-from ..db import query
+from ..db import query, sql_group_concat
 
 
 def _hostid_filter_sql(alias: str, allowed_hostids) -> tuple[str, tuple]:
@@ -77,11 +77,12 @@ def list_all_hosts(allowed_hostids=None) -> list[dict]:
     """Every host, with the group names it belongs to shown for
     context. Powers the dashboard builder's host picker — dashboards
     are scoped to explicitly chosen hosts, not a whole group."""
-    # Note: `groups` is a reserved word in MySQL — must be quoted.
+    # `groups` is reserved in MySQL; quote via sql_group_concat helper (MySQL + PostgreSQL).
     filt_sql, filt_params = _hostid_filter_sql("h", allowed_hostids)
+    groups_expr = sql_group_concat("g.name", alias="groups", order_expr="g.name")
     sql = f"""
         SELECT h.hostid, h.host, h.name, h.status,
-               GROUP_CONCAT(DISTINCT g.name ORDER BY g.name SEPARATOR ', ') AS `groups`
+               {groups_expr}
         FROM hosts h
         LEFT JOIN hosts_groups hg ON hg.hostid = h.hostid
         LEFT JOIN hstgrp g ON g.groupid = hg.groupid
@@ -268,9 +269,10 @@ def list_problems(
         params.append(int(groupid))
 
     if status == "open":
-        status_sql = " AND p.r_eventid IS NULL "
+        # Zabbix problem table: open = r_eventid IS NULL (some dumps may use 0)
+        status_sql = " AND (p.r_eventid IS NULL OR p.r_eventid = 0) "
     elif status == "closed":
-        status_sql = " AND p.r_eventid IS NOT NULL "
+        status_sql = " AND p.r_eventid IS NOT NULL AND p.r_eventid <> 0 "
     else:
         status_sql = ""
 
@@ -376,7 +378,12 @@ def list_problems(
         r["severity_label"] = SEVERITY_LABELS.get(sev, str(sev))
         if not r.get("problem_name"):
             r["problem_name"] = r.get("trigger_name") or "—"
-        is_open = r.get("r_eventid") is None
+        # Open problems have r_eventid NULL (Zabbix problem table). Treat 0/"0" as open too.
+        _rid = r.get("r_eventid")
+        try:
+            is_open = _rid is None or int(_rid) == 0
+        except (TypeError, ValueError):
+            is_open = not _rid
         r["problem_status"] = "Open" if is_open else "Closed"
         r["ack_status"] = "Acknowledged" if int(r.get("acknowledged") or 0) == 1 else "Unacknowledged"
         out.append(r)

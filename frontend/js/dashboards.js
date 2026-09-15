@@ -81,6 +81,53 @@ function newColumn(){
   };
 }
 
+/** True when the column label is still the placeholder and should be replaced by a real metric name. */
+function isGenericMetricLabel(label){
+  const t = String(label || '').trim().toLowerCase();
+  return !t || t === 'new metric' || /^metric\s*\d*$/i.test(t) || t === 'column';
+}
+
+/**
+ * Derive a short human label from a Zabbix item name/key (e.g. bandwidth, traffic rate).
+ * Used when a column is still titled "New metric".
+ */
+function deriveMetricLabelFromItem(item){
+  if(!item) return '';
+  const name = String(item.name || '').trim();
+  const key = String(item.key_ || '').trim();
+  // Prefer a clean item name when it isn't just the raw key
+  if(name && name.toLowerCase() !== key.toLowerCase()){
+    // Strip common Zabbix template noise: "Interface eth0: Bits received" → keep meaningful part
+    let cleaned = name
+      .replace(/^Interface\s+[^:]+:\s*/i, '')
+      .replace(/\s*\([^)]*\)\s*$/g, '')
+      .trim();
+    if(cleaned.length > 40) cleaned = cleaned.slice(0, 40).trim();
+    if(cleaned) return cleaned;
+  }
+  // Fall back to a readable form of the key
+  if(key){
+    let k = key.replace(/\[[^\]]*\]/g, '').replace(/[._]+/g, ' ').trim();
+    if(k.length > 36) k = k.slice(0, 36).trim();
+    return k || key;
+  }
+  return name || '';
+}
+
+/** If col still has a generic label, set it from the first mapped item and refresh the label input. */
+function maybeApplyMetricLabelFromItem(col, item){
+  if(!col || !item || !isGenericMetricLabel(col.label)) return false;
+  const derived = deriveMetricLabelFromItem(item);
+  if(!derived) return false;
+  col.label = derived;
+  // Keep builder UI in sync if the label input is on screen
+  try{
+    const input = document.querySelector('.col-row[data-col="'+col.id+'"] .col-label');
+    if(input) input.value = derived;
+  }catch(_){}
+  return true;
+}
+
 function matchItemOnHost(host, query){
   const q = (query || '').trim().toLowerCase();
   if(!q) return null;
@@ -146,10 +193,12 @@ function autoMapAllColumns(){
       }
       if(match){
         col.host_items[String(h.hostid)] = parseInt(match.itemid, 10);
+        maybeApplyMetricLabelFromItem(col, match);
         total++;
       }
     });
   });
+  renderColRows();
   renderMapGrid();
   showToast(total ? ('Auto-mapped '+total+' cell'+(total===1?'':'s')+'.') : 'No additional matches — type a key in a column header and press Enter.', { type: total ? 'success' : 'warn' });
 }
@@ -224,8 +273,6 @@ async function showDashboardList(){
   }
 
   await loadPins();
-  const existingIds = new Set(dashboards.map(function(d){ return d.id; }));
-  const recents = getRecents('dash');
 
   function renderCards(list){
     return list.map(function(d){
@@ -235,21 +282,29 @@ async function showDashboardList(){
       const owner = d.mine ? 'You' : ('By '+escHtml(d.owner_username||'unknown'));
       const shareBadge = shareBadgeHtml(d);
       const pinned = isPinned('dashboard', d.id);
-      const editBtns = d.can_edit
-        ? '<button data-act="edit" data-id="'+d.id+'">Edit</button>'+
-          '<button data-act="delete" data-id="'+d.id+'" class="danger">Delete</button>'
-        : '';
-      const dupBtn = canManage() ? '<button data-act="dup" data-id="'+d.id+'">Duplicate</button>' : '';
-      return '<div class="dash-card">'+
-        '<div class="dash-card-top"><h4>'+escHtml(d.name||'Untitled')+shareBadge+'</h4>'+
-          '<button type="button" class="pin-btn'+(pinned?' pinned':'')+'" data-act="pin" data-id="'+d.id+'" title="'+(pinned?'Unpin':'Pin to top')+'">★</button>'+
+      const moreItems = [];
+      moreItems.push('<button type="button" role="menuitem" data-act="export" data-id="'+d.id+'">Export JSON</button>');
+      if(canManage()) moreItems.push('<button type="button" role="menuitem" data-act="dup" data-id="'+d.id+'">Duplicate</button>');
+      if(d.can_edit){
+        moreItems.push('<button type="button" role="menuitem" data-act="edit" data-id="'+d.id+'">Edit</button>');
+        moreItems.push('<button type="button" role="menuitem" data-act="delete" data-id="'+d.id+'" class="danger">Delete</button>');
+      }
+      return '<div class="dash-card dash-card-clickable" data-dash-id="'+d.id+'" data-act="run" data-id="'+d.id+'" title="Open dashboard" role="button" tabindex="0">'+
+        '<div class="dash-card-top">'+
+          '<h4>'+escHtml(d.name||'Untitled')+shareBadge+'</h4>'+
+          '<div class="dash-card-tools">'+
+            '<button type="button" class="pin-btn'+(pinned?' pinned':'')+'" data-act="pin" data-id="'+d.id+'" title="'+(pinned?'Unpin':'Pin to top')+'">★</button>'+
+            (moreItems.length
+              ? '<div class="card-more">'+
+                  '<button type="button" class="card-more-btn" data-act="more" aria-haspopup="true" aria-expanded="false" title="More actions">···</button>'+
+                  '<div class="card-more-menu" role="menu" hidden>'+moreItems.join('')+'</div>'+
+                '</div>'
+              : '')+
+          '</div>'+
         '</div>'+
         '<div class="dash-meta">'+owner+' · '+nHosts+' host'+(nHosts===1?'':'s')+' · '+nCols+' metric'+(nCols===1?'':'s')+(updated?' · updated '+updated:'')+'</div>'+
-        '<div class="dash-actions">'+
-          '<button data-act="run" data-id="'+d.id+'">Run</button>'+
-          '<button data-act="export" data-id="'+d.id+'">Export</button>'+
-          dupBtn+editBtns+
-        '</div></div>';
+        '<div class="dash-card-hint">Click to run</div>'+
+      '</div>';
     }).join('');
   }
 
@@ -276,11 +331,10 @@ async function showDashboardList(){
     });
   }catch(e){ console.warn(e); }
   const nowSec = Math.floor(Date.now()/1000);
-  let fromVal = '', toVal = '', lab = 'UTC';
+  let fromVal = '', toVal = '';
   try{
     fromVal = fromEpochToLocalInput(nowSec - 24*3600);
     toVal = fromEpochToLocalInput(nowSec);
-    lab = tzLabel();
   }catch(e){
     console.warn('date helpers', e);
     const d = new Date();
@@ -292,18 +346,24 @@ async function showDashboardList(){
 
   try{
   root.innerHTML =
-    '<p class="page-intro">Browse live metrics across hosts, or open a saved dashboard for multi-column layouts.</p>'+
-    '<div class="filterbar qv-bar" style="margin-bottom:18px;">'+
-      '<div class="eyebrow" style="margin-bottom:8px;">Quick view</div>'+
-      /* Row 1: Host group · Load · Hosts */
-      '<div class="qv-row">'+
-        '<div class="field" style="flex:0 1 200px;min-width:140px;"><label for="dqGroup">Host group</label><select id="dqGroup">'+groupOpts+'</select></div>'+
-        '<div class="field" style="flex:0 0 auto;"><label>&nbsp;</label>'+
-          '<button type="button" class="btn btn-ghost" id="dqLoadGroupBtn" style="height:38px;white-space:nowrap;">Load hosts</button></div>'+
-        '<div class="field" style="flex:1 1 220px;min-width:160px;"><label>Hosts</label>'+
+    '<div class="filterbar qv-bar qv-bar-ref qv-bar-compact" style="margin-bottom:12px;">'+
+      /* Row 1: Host groups | Hosts | Metric | Value | Clear */
+      '<div class="qv-row qv-row-scope">'+
+        '<div class="field qv-field-groups"><label>Host groups</label>'+
+          '<div class="picker" id="dqGroupsPicker">'+
+            '<div class="picker-trigger" id="dqGroupsTrigger" tabindex="0">'+
+              '<span class="picker-placeholder" id="dqGroupsPlaceholder">Select host groups…</span>'+
+              '<svg class="picker-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
+            '</div>'+
+            '<div class="picker-panel" id="dqGroupsPanel">'+
+              '<input class="picker-search" id="dqGroupsSearch" placeholder="Filter groups…" autocomplete="off">'+
+              '<div class="picker-list" id="dqGroupsList"></div>'+
+            '</div>'+
+          '</div></div>'+
+        '<div class="field qv-field-hosts"><label>Hosts</label>'+
           '<div class="picker" id="dqHostsPicker">'+
             '<div class="picker-trigger" id="dqHostsTrigger" tabindex="0">'+
-              '<span class="picker-placeholder" id="dqHostsPlaceholder">Select hosts…</span>'+
+              '<span class="picker-placeholder" id="dqHostsPlaceholder">Select groups or hosts…</span>'+
               '<svg class="picker-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
             '</div>'+
             '<div class="picker-panel" id="dqHostsPanel">'+
@@ -311,42 +371,49 @@ async function showDashboardList(){
               '<div class="picker-list" id="dqHostsList"></div>'+
             '</div>'+
           '</div></div>'+
-      '</div>'+
-      /* Row 2: Item · Clear */
-      '<div class="qv-row">'+
-        '<div class="field" style="flex:1 1 280px;min-width:180px;"><label>Item</label>'+
+        '<div class="field qv-field-items"><label>Metric</label>'+
           '<div class="picker" id="dqItemPicker">'+
             '<div class="picker-trigger" id="dqItemTrigger" tabindex="0">'+
               '<span class="picker-placeholder" id="dqItemPlaceholder">Select hosts first…</span>'+
               '<svg class="picker-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
             '</div>'+
             '<div class="picker-panel" id="dqItemPanel">'+
-              '<input class="picker-search" id="dqItemSearch" placeholder="Filter by name or key…" autocomplete="off">'+
+              '<input class="picker-search" id="dqItemSearch" placeholder="Filter metrics…" autocomplete="off">'+
               '<div class="picker-list" id="dqItemList"></div>'+
             '</div>'+
           '</div></div>'+
-        '<div class="field" style="flex:0 0 auto;"><label>&nbsp;</label>'+
-          '<button type="button" class="btn btn-ghost" id="dqClearBtn" style="height:38px;" title="Clear host and item selection">Clear</button></div>'+
+        '<div class="field qv-field-value"><label>Value</label>'+
+          '<div class="toolbar-row dq-agg-bar" id="dqAggBar" role="group" aria-label="Value">'+
+            '<button type="button" class="chip-btn" data-agg="min">min</button>'+
+            '<button type="button" class="chip-btn active" data-agg="avg">avg</button>'+
+            '<button type="button" class="chip-btn" data-agg="max">max</button>'+
+            '<button type="button" class="chip-btn" data-agg="last">last</button>'+
+          '</div></div>'+
+        '<div class="field qv-field-clear"><label>&nbsp;</label>'+
+          '<button type="button" class="btn btn-ghost" id="dqClearBtn" title="Clear selection">Clear</button></div>'+
       '</div>'+
-      /* Row 3: From · To · RANGE · HOURS · Compare · Show metrics */
-      '<div class="qv-row qv-row-main">'+
-        '<div class="field" style="flex:0 0 168px;"><label for="dqFrom">From ('+lab+')</label><input type="datetime-local" id="dqFrom" value="'+fromVal+'"></div>'+
-        '<div class="field" style="flex:0 0 168px;"><label for="dqTo">To ('+lab+')</label><input type="datetime-local" id="dqTo" value="'+toVal+'"></div>'+
+      /* Row 2: From | To | RANGE | HOURS | Compare | Show metrics */
+      '<div class="qv-row qv-row-time">'+
+        '<div class="field" style="flex:0 0 168px;"><label for="dqFrom">From</label><input type="datetime-local" id="dqFrom" value="'+fromVal+'"></div>'+
+        '<div class="field" style="flex:0 0 168px;"><label for="dqTo">To</label><input type="datetime-local" id="dqTo" value="'+toVal+'"></div>'+
         datePresetBar('dqFrom','dqTo')+
         dayHoursPresetBar('dqDayFrom','dqDayTo','dqDay')+
-        '<label class="dash-run-compare" style="align-self:end;padding-bottom:8px;">'+
+        '<label class="dash-run-compare" title="Compare with previous period of equal length">'+
           '<input type="checkbox" id="dqComparePrev"> Compare previous</label>'+
-        '<div class="field" style="flex:0 0 auto;"><label>&nbsp;</label>'+
-          '<button class="btn btn-primary" id="dqRunBtn" style="height:38px;"><span class="spinner"></span><span class="btn-label">Show metrics</span></button></div>'+
-        '<span class="status-msg" id="dqStatus" style="align-self:end;padding-bottom:8px;"></span>'+
+        '<div class="qv-field-actions qv-field-actions-end">'+
+          '<button class="btn btn-primary" id="dqRunBtn"><span class="spinner"></span><span class="btn-label">Show metrics</span></button>'+
+        '</div>'+
       '</div>'+
-      '<div id="dqResults" style="margin-top:12px;"></div>'+
+      '<div class="qv-status-line"><span class="status-msg" id="dqStatus"></span></div>'+
+      '<div id="dqResults" style="margin-top:8px;"></div>'+
     '</div>'+
-    '<div class="eyebrow" style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;">'+
+    '<div class="eyebrow dash-list-head" style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'+
       '<span>Saved dashboards</span>'+
-      (canManage() ? '<button type="button" class="btn btn-ghost" id="dashImportBtn" style="height:26px;padding:0 10px;font-size:11px;">Import JSON</button>' : '')+
+      '<span class="dash-list-head-actions">'+
+        (canManage() ? '<button type="button" class="btn btn-primary" id="dashNewBtn" style="height:30px;padding:0 12px;font-size:12px;">+ New dashboard</button>' : '')+
+        (canManage() ? '<button type="button" class="btn btn-ghost" id="dashImportBtn" style="height:30px;padding:0 10px;font-size:12px;">Import JSON</button>' : '')+
+      '</span>'+
     '</div>'+
-    recentStripHtml('dash', recents, existingIds)+
     (dashboards.length > 1 ? '<div class="list-toolbar">'+
       '<input type="search" id="dashSearch" placeholder="Filter dashboards by name…">'+
       '<select id="dashSort">'+
@@ -368,9 +435,10 @@ async function showDashboardList(){
       : '')+
     '<div class="dash-list" id="dashListGrid">'+cards+
       (canManage() && dashboards.length > 0 ?
-      '<div class="new-dash-card" id="newDashCard">'+
-        '<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'+
-        'New dashboard'+
+      '<div class="new-dash-card" id="newDashCard" role="button" tabindex="0">'+
+        '<div class="new-dash-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div>'+
+        '<div class="new-dash-title">New dashboard</div>'+
+        '<div class="new-dash-sub">Create a multi-column metrics layout</div>'+
       '</div>' : '')+
     '</div>';
 
@@ -380,7 +448,8 @@ async function showDashboardList(){
     return;
   }
 
-  if(!dashState.quick) dashState.quick = { hostids: [], hostsWithItems: [], selectedItemQuery: '', selectedItemLabel: '' };
+  if(!dashState.quick) dashState.quick = { hostids: [], groupids: [], hostsWithItems: [], selectedItemQuery: '', selectedItemLabel: '' };
+  if(!dashState.quick.groupids) dashState.quick.groupids = [];
 
   const newDashCard = document.getElementById('newDashCard');
   if(newDashCard) newDashCard.addEventListener('click', async function(){
@@ -428,14 +497,33 @@ async function showDashboardList(){
     return d ? d.name : '';
   }
   function wireCardActions(){
+    function runDash(id){
+      if(!id) return;
+      pushRecent('dash', id, cardNameFor(id));
+      openRun(id);
+    }
+    root.querySelectorAll('.dash-card-clickable').forEach(function(card){
+      card.addEventListener('click', function(e){
+        // Ignore clicks on tools / menu
+        if(e.target.closest && e.target.closest('.dash-card-tools, .card-more-menu, .pin-btn, .card-more-btn')) return;
+        runDash(card.dataset.id);
+      });
+      card.addEventListener('keydown', function(e){
+        if(e.key === 'Enter' || e.key === ' '){
+          e.preventDefault();
+          runDash(card.dataset.id);
+        }
+      });
+    });
     root.querySelectorAll('[data-act="run"]').forEach(function(b){
+      if(b.classList.contains('dash-card-clickable')) return;
       b.addEventListener('click', function(){
-        pushRecent('dash', b.dataset.id, cardNameFor(b.dataset.id));
-        openRun(b.dataset.id);
+        runDash(b.dataset.id);
       });
     });
     root.querySelectorAll('[data-act="edit"]').forEach(function(b){
-      b.addEventListener('click', async function(){
+      b.addEventListener('click', async function(e){
+        e.stopPropagation();
         try{
           const res = await apiFetch('/api/dashboards/'+b.dataset.id);
           if(!res.ok) throw new Error('HTTP '+res.status);
@@ -446,7 +534,8 @@ async function showDashboardList(){
       });
     });
     root.querySelectorAll('[data-act="dup"]').forEach(function(b){
-      b.addEventListener('click', async function(){
+      b.addEventListener('click', async function(e){
+        e.stopPropagation();
         try{
           const res = await apiFetch('/api/dashboards/'+b.dataset.id);
           if(!res.ok) throw new Error('HTTP '+res.status);
@@ -460,7 +549,7 @@ async function showDashboardList(){
           });
           if(!created.ok){
             const err = await created.json().catch(function(){ return {}; });
-            throw new Error(err.detail || ('HTTP '+created.status));
+            throw new Error(formatApiDetail(err.detail, 'HTTP '+created.status));
           }
           showToast('Dashboard duplicated (as a private copy).', { type: 'success' });
           showDashboardList();
@@ -468,7 +557,8 @@ async function showDashboardList(){
       });
     });
     root.querySelectorAll('[data-act="export"]').forEach(function(b){
-      b.addEventListener('click', async function(){
+      b.addEventListener('click', async function(e){
+        e.stopPropagation();
         try{
           const res = await apiFetch('/api/dashboards/'+b.dataset.id);
           if(!res.ok) throw new Error('HTTP '+res.status);
@@ -488,14 +578,15 @@ async function showDashboardList(){
       });
     });
     root.querySelectorAll('[data-act="delete"]').forEach(function(b){
-      b.addEventListener('click', async function(){
+      b.addEventListener('click', async function(e){
+        e.stopPropagation();
         const ok = await confirmModal('Delete this dashboard? This cannot be undone.', { title: 'Delete dashboard' });
         if(!ok) return;
         try{
           const res = await apiFetch('/api/dashboards/'+b.dataset.id, { method: 'DELETE' });
           if(!res.ok){
             const err = await res.json().catch(function(){ return {}; });
-            throw new Error(err.detail || ('HTTP '+res.status));
+            throw new Error((typeof formatApiDetail === 'function' ? formatApiDetail(err.detail, 'HTTP '+res.status) : (err.detail && (err.detail.message || JSON.stringify(err.detail))) || ('HTTP '+res.status)));
           }
           showToast('Dashboard deleted.');
           showDashboardList();
@@ -505,12 +596,40 @@ async function showDashboardList(){
   }
   wireCardActions();
 
-  root.querySelectorAll('[data-recent-id]').forEach(function(chip){
-    chip.addEventListener('click', function(){
-      pushRecent('dash', chip.dataset.recentId, cardNameFor(chip.dataset.recentId));
-      openRun(chip.dataset.recentId);
+  // ··· more menu on dashboard cards
+  root.querySelectorAll('.card-more-btn').forEach(function(btn){
+    btn.addEventListener('click', function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      const menu = btn.parentElement && btn.parentElement.querySelector('.card-more-menu');
+      if(!menu) return;
+      const willOpen = menu.hidden;
+      root.querySelectorAll('.card-more-menu').forEach(function(m){ m.hidden = true; });
+      root.querySelectorAll('.card-more-btn').forEach(function(b){ b.setAttribute('aria-expanded','false'); });
+      if(willOpen){
+        menu.hidden = false;
+        btn.setAttribute('aria-expanded','true');
+      }
     });
   });
+  // Close menus on outside click (defer so the opening click doesn't close immediately)
+  if(root._dashMoreCloser) document.removeEventListener('click', root._dashMoreCloser);
+  root._dashMoreCloser = function(e){
+    if(e.target.closest && e.target.closest('.card-more')) return;
+    root.querySelectorAll('.card-more-menu').forEach(function(m){ m.hidden = true; });
+    root.querySelectorAll('.card-more-btn').forEach(function(b){ b.setAttribute('aria-expanded','false'); });
+  };
+  document.addEventListener('click', root._dashMoreCloser);
+
+  async function startNewDashboard(){
+    const pick = await pickTemplateModal(DASH_TEMPLATES);
+    if(pick === undefined) return;
+    if(pick) openBuilderFromTemplate(pick);
+    else openBuilder(null);
+  }
+  const dashNewBtn = document.getElementById('dashNewBtn');
+  if(dashNewBtn) dashNewBtn.addEventListener('click', function(){ startNewDashboard(); });
 
   const searchInput = document.getElementById('dashSearch');
   const sortSelect = document.getElementById('dashSort');
@@ -618,45 +737,57 @@ function wireDashQuickView(){
       q.selectedItems = [{ query: q.selectedItemQuery, label: q.selectedItemLabel || q.selectedItemQuery }];
     }
     trigger.querySelectorAll('.pill').forEach(function(p){ p.remove(); });
-    if(!q.selectedItems.length){
-      placeholder.style.display = '';
+    const n = q.selectedItems.length;
+    placeholder.style.display = '';
+    if(!n){
       placeholder.textContent = q.hostids.length ? 'Search & select one or more items…' : 'Select hosts first…';
+      placeholder.classList.remove('picker-summary');
       return;
     }
-    placeholder.style.display = 'none';
-    q.selectedItems.forEach(function(it){
-      const pill = document.createElement('span');
-      pill.className = 'pill';
-      pill.innerHTML = (it.label || it.query) +
-        ' <button type="button" aria-label="Remove">'+
-        '<svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M6 6L18 18M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>';
-      pill.querySelector('button').addEventListener('click', function(e){
-        e.stopPropagation();
-        q.selectedItems = q.selectedItems.filter(function(x){ return x.query !== it.query; });
-        q.selectedItemQuery = q.selectedItems.length ? q.selectedItems[0].query : '';
-        renderDqItemTrigger();
-        renderDqItemOptions((document.getElementById('dqItemSearch')||{}).value||'');
-      });
-      trigger.insertBefore(pill, trigger.querySelector('.picker-chevron'));
-    });
+    placeholder.classList.add('picker-summary');
+    if(n === 1){
+      placeholder.textContent = q.selectedItems[0].label || q.selectedItems[0].query;
+    } else {
+      placeholder.textContent = n + ' items selected';
+    }
   }
 
   function renderDqHostOptions(filter){
     const list = document.getElementById('dqHostsList');
     if(!list) return;
     const f = (filter||'').trim().toLowerCase();
-    const filtered = (dashState.allHosts||[]).filter(function(h){
+    const scopeIds = new Set((q.hostids||[]).map(function(id){ return parseInt(id,10); }));
+    const fromGroups = !!q._hostsFromGroups && scopeIds.size > 0;
+    // Prefer hosts returned by the group API; fall back to global catalog
+    let source = [];
+    if(fromGroups && q.scopedHosts && q.scopedHosts.length){
+      source = q.scopedHosts.slice();
+    } else if(fromGroups && scopeIds.size){
+      // Build from allHosts + any missing ids as stubs
+      const byId = {};
+      (dashState.allHosts||[]).forEach(function(h){ byId[parseInt(h.hostid,10)] = h; });
+      source = Array.from(scopeIds).map(function(id){
+        return byId[id] || { hostid: id, host: String(id), name: String(id) };
+      });
+    } else {
+      source = dashState.allHosts || [];
+    }
+    const filtered = source.filter(function(h){
       const label = (h.name||h.host||'');
-      return !f || label.toLowerCase().includes(f) || (h.groups||'').toLowerCase().includes(f);
+      return !f || label.toLowerCase().includes(f) || String(h.groups||'').toLowerCase().includes(f);
     });
     const selected = new Set((q.hostids||[]).map(function(id){ return parseInt(id,10); }));
-    list.innerHTML = filtered.length ? filtered.map(function(h){
-      const hid = parseInt(h.hostid,10);
-      return '<label class="picker-option">'+
-        '<input type="checkbox" value="'+hid+'" '+(selected.has(hid)?'checked':'')+'>'+
-        '<div class="opt-main"><div class="opt-name">'+(h.name||h.host)+'</div>'+
-        '<div class="opt-meta">'+(h.groups||'')+'</div></div></label>';
-    }).join('') : '<div class="picker-empty">No hosts match.</div>';
+    if(!filtered.length){
+      list.innerHTML = '<div class="picker-empty">'+(source.length ? 'No hosts match.' : 'No hosts loaded. Pick a host group first.')+'</div>';
+    } else {
+      list.innerHTML = filtered.map(function(h){
+        const hid = parseInt(h.hostid,10);
+        return '<label class="picker-option">'+
+          '<input type="checkbox" value="'+hid+'" '+(selected.has(hid)?'checked':'')+'>'+
+          '<div class="opt-main"><div class="opt-name">'+escHtml(h.name||h.host||String(hid))+'</div>'+
+          '<div class="opt-meta">'+escHtml(String(h.groups||''))+'</div></div></label>';
+      }).join('');
+    }
     list.querySelectorAll('input[type=checkbox]').forEach(function(cb){
       cb.addEventListener('change', async function(){
         const hid = parseInt(cb.value,10);
@@ -674,29 +805,27 @@ function wireDashQuickView(){
   function renderDqHostTrigger(){
     const trigger = document.getElementById('dqHostsTrigger');
     const placeholder = document.getElementById('dqHostsPlaceholder');
-    if(!trigger) return;
+    if(!trigger || !placeholder) return;
+    // Compact summary — never expand into a multi-line chip cloud
     trigger.querySelectorAll('.pill').forEach(function(p){ p.remove(); });
-    if(!q.hostids.length){ placeholder.style.display=''; return; }
-    placeholder.style.display='none';
-    q.hostids.forEach(function(hostid){
-      const hid = parseInt(hostid,10);
+    const n = (q.hostids || []).length;
+    if(!n){
+      placeholder.style.display = '';
+      placeholder.textContent = 'Select groups or hosts…';
+      placeholder.classList.remove('picker-summary');
+      return;
+    }
+    placeholder.style.display = '';
+    placeholder.classList.add('picker-summary');
+    if(n === 1){
+      const hid = parseInt(q.hostids[0], 10);
       const h = (dashState.allHosts||[]).find(function(x){ return parseInt(x.hostid,10)===hid; });
-      const pill = document.createElement('span');
-      pill.className = 'pill';
-      pill.innerHTML = (h?(h.name||h.host):hid)+
-        ' <button type="button"><svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M6 6L18 18M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>';
-      pill.querySelector('button').addEventListener('click', async function(e){
-        e.stopPropagation();
-        q.hostids = q.hostids.filter(function(id){ return parseInt(id,10)!==hid; });
-        renderDqHostTrigger();
-        renderDqHostOptions(document.getElementById('dqHostsSearch')?.value||'');
-        q.hostsWithItems = q.hostids.length ? await fetchHostsItems(q.hostids) : [];
-        q.selectedItemQuery = ''; q.selectedItemLabel = '';
-        renderDqItemTrigger(); renderDqItemOptions('');
-      });
-      trigger.insertBefore(pill, trigger.querySelector('.picker-chevron'));
-    });
+      placeholder.textContent = h ? (h.name||h.host||hid) : String(hid);
+    } else {
+      placeholder.textContent = n + ' hosts selected';
+    }
   }
+
 
   renderDqHostOptions();
   renderDqHostTrigger();
@@ -705,50 +834,247 @@ function wireDashQuickView(){
 
   document.getElementById('dqHostsTrigger').addEventListener('click', function(){
     const panel = document.getElementById('dqHostsPanel');
+    if(!panel) return;
     const open = !panel.classList.contains('open');
-    panel.classList.toggle('open', open);
-    document.getElementById('dqHostsTrigger').classList.toggle('open', open);
-    if(open) document.getElementById('dqHostsSearch').focus();
+    // close other picker panels
+    if(typeof closeAllOpenPickers === 'function') closeAllOpenPickers(null);
+    else {
+      document.querySelectorAll('.picker-panel').forEach(function(p){ p.classList.remove('open'); p.style.display = ''; });
+      document.querySelectorAll('.picker-trigger').forEach(function(t){ t.classList.remove('open'); });
+    }
+    if(open){
+      panel.classList.add('open');
+      panel.style.display = 'block';
+      document.getElementById('dqHostsTrigger').classList.add('open');
+      renderDqHostOptions((document.getElementById('dqHostsSearch')||{}).value||'');
+      const s = document.getElementById('dqHostsSearch');
+      if(s) s.focus();
+    }
   });
   document.getElementById('dqHostsSearch').addEventListener('input', function(e){ renderDqHostOptions(e.target.value); });
   document.getElementById('dqItemTrigger').addEventListener('click', async function(){
     const panel = document.getElementById('dqItemPanel');
+    if(!panel) return;
     const open = !panel.classList.contains('open');
-    panel.classList.toggle('open', open);
-    document.getElementById('dqItemTrigger').classList.toggle('open', open);
+    if(typeof closeAllOpenPickers === 'function') closeAllOpenPickers(null);
+    else {
+      document.querySelectorAll('.picker-panel').forEach(function(p){ p.classList.remove('open'); p.style.display = ''; });
+      document.querySelectorAll('.picker-trigger').forEach(function(t){ t.classList.remove('open'); });
+    }
     if(open){
-      if(q.hostids.length && (!q.hostsWithItems || !q.hostsWithItems.length)){
-        const list = document.getElementById('dqItemList');
+      panel.classList.add('open');
+      panel.style.display = 'block';
+      document.getElementById('dqItemTrigger').classList.add('open');
+      const list = document.getElementById('dqItemList');
+      if(!q.hostids.length){
+        if(list) list.innerHTML = '<div class="picker-empty">Select hosts first.</div>';
+      } else if(!q.hostsWithItems || !q.hostsWithItems.length){
         if(list) list.innerHTML = '<div class="picker-empty">Loading items…</div>';
-        try{ q.hostsWithItems = await fetchHostsItems(q.hostids); }
-        catch(err){ if(list) list.innerHTML = '<div class="picker-empty">Failed to load items</div>'; return; }
+        try{
+          q.hostsWithItems = await fetchHostsItems(q.hostids);
+          renderDqItemOptions((document.getElementById('dqItemSearch')||{}).value||'');
+        }catch(err){
+          if(list) list.innerHTML = '<div class="picker-empty">Failed to load items</div>';
+          return;
+        }
+      } else {
+        renderDqItemOptions((document.getElementById('dqItemSearch')||{}).value||'');
       }
-      renderDqItemOptions((document.getElementById('dqItemSearch')||{}).value||'');
       const search = document.getElementById('dqItemSearch');
       if(search) search.focus();
     }
   });
   document.getElementById('dqItemSearch').addEventListener('input', function(e){ renderDqItemOptions(e.target.value); });
 
-  document.getElementById('dqLoadGroupBtn').addEventListener('click', async function(){
-    const gid = document.getElementById('dqGroup').value;
+  // Multi host-group selection — auto-loads hosts when groups change
+  if(!q.groupids) q.groupids = [];
+  function renderDqGroupOptions(filter){
+    const list = document.getElementById('dqGroupsList');
+    if(!list) return;
+    const f = (filter||'').trim().toLowerCase();
+    const groups = dashState.allGroups || [];
+    const selected = new Set((q.groupids||[]).map(function(id){ return parseInt(id,10); }));
+    const rows = groups.filter(function(g){
+      if(!f) return true;
+      return String(g.name||'').toLowerCase().indexOf(f) >= 0;
+    });
+    list.innerHTML = rows.length ? rows.map(function(g){
+      const gid = parseInt(g.groupid,10);
+      const on = selected.has(gid);
+      const cnt = (g.host_count != null) ? g.host_count : null;
+      const label = escHtml(g.name||('Group '+gid))+(cnt!=null ? ' ('+cnt+')' : '');
+      return '<label class="picker-option'+(on?' on':'')+'">'+
+        '<input type="checkbox" data-groupid="'+gid+'"'+(on?' checked':'')+'>'+
+        '<div class="opt-main"><div class="opt-name">'+label+'</div></div></label>';
+    }).join('') : '<div class="picker-empty">No groups match.</div>';
+    list.querySelectorAll('input[type=checkbox]').forEach(function(cb){
+      cb.addEventListener('change', async function(){
+        const gid = parseInt(cb.getAttribute('data-groupid'),10);
+        if(cb.checked){
+          if(q.groupids.indexOf(gid) < 0) q.groupids.push(gid);
+        } else {
+          q.groupids = q.groupids.filter(function(id){ return parseInt(id,10) !== gid; });
+        }
+        renderDqGroupOptions(document.getElementById('dqGroupsSearch')?.value||'');
+        renderDqGroupTrigger();
+        await loadHostsFromSelectedGroups();
+      });
+    });
+  }
+  function renderDqGroupTrigger(){
+    const ph = document.getElementById('dqGroupsPlaceholder');
+    if(!ph) return;
+    const n = (q.groupids||[]).length;
+    if(!n){ ph.textContent = 'Select host groups…'; ph.classList.remove('picker-summary'); return; }
+    ph.classList.add('picker-summary');
+    const selected = (dashState.allGroups||[]).filter(function(g){
+      return q.groupids.indexOf(parseInt(g.groupid,10)) >= 0;
+    }).map(function(g){
+      const cnt = g.host_count != null ? g.host_count : null;
+      return (g.name||g.groupid)+(cnt!=null ? ' ('+cnt+')' : '');
+    });
+    if(n === 1) ph.textContent = selected[0];
+    else if(n === 2) ph.textContent = selected.join(', ');
+    else ph.textContent = selected.slice(0,2).join(', ')+' +'+(n-2)+' more';
+  }
+  async function loadHostsFromSelectedGroups(){
     const status = document.getElementById('dqStatus');
-    if(!gid){ status.textContent='Pick a host group first.'; status.className='status-msg warn'; return; }
-    status.textContent='Loading…'; status.className='status-msg';
-    try{
-      const res = await apiFetch('/api/hostgroups/'+gid+'/hosts');
-      if(!res.ok) throw new Error('HTTP '+res.status);
-      const hosts = await res.json();
-      q.hostids = hosts.map(function(h){ return parseInt(h.hostid,10); });
-      q.hostsWithItems = q.hostids.length ? await fetchHostsItems(q.hostids) : [];
-      q.selectedItemQuery = ''; q.selectedItemLabel = '';
-      renderDqHostOptions(); renderDqHostTrigger(); renderDqItemTrigger(); renderDqItemOptions('');
-      status.textContent = 'Loaded '+q.hostids.length+' hosts.';
-    }catch(err){
-      status.textContent = 'Failed: '+(err.message||err);
-      status.className='status-msg warn';
+    const gids = q.groupids || [];
+    if(!gids.length){
+      // Don't wipe manually picked hosts if user clears groups — only clear when groups drove selection
+      if(q._hostsFromGroups){
+        q.hostids = [];
+        q.hostsWithItems = [];
+        q.selectedItems = [];
+        q.selectedItemQuery = '';
+        q.selectedItemLabel = '';
+        q._hostsFromGroups = false;
+        renderDqHostOptions('');
+        renderDqHostTrigger();
+        renderDqItemOptions('');
+        renderDqItemTrigger();
+      }
+      return;
     }
-  });
+    if(status){ status.textContent = 'Loading hosts…'; status.className = 'status-msg'; }
+    try{
+      const results = await Promise.all(gids.map(function(gid){
+        return apiFetch('/api/hostgroups/'+gid+'/hosts').then(function(res){
+          if(!res.ok) throw new Error('HTTP '+res.status);
+          return res.json();
+        });
+      }));
+      const seen = {};
+      const hostids = [];
+      const hostObjs = [];
+      results.forEach(function(hosts){
+        (hosts||[]).forEach(function(h){
+          const id = parseInt(h.hostid,10);
+          if(!seen[id]){
+            seen[id] = true;
+            hostids.push(id);
+            hostObjs.push(h);
+          }
+        });
+      });
+      // Merge into allHosts so the hosts dropdown can list them
+      if(!dashState.allHosts) dashState.allHosts = [];
+      const known = {};
+      dashState.allHosts.forEach(function(h){ known[parseInt(h.hostid,10)] = true; });
+      hostObjs.forEach(function(h){
+        const id = parseInt(h.hostid,10);
+        if(!known[id]){
+          dashState.allHosts.push(h);
+          known[id] = true;
+        }
+      });
+      q.scopedHosts = hostObjs; // preferred list for dropdown when groups drive selection
+      q.hostids = hostids;
+      q._hostsFromGroups = true;
+      q.hostsWithItems = [];
+      q.selectedItems = [];
+      q.selectedItemQuery = '';
+      q.selectedItemLabel = '';
+      renderDqHostOptions(document.getElementById('dqHostsSearch')?.value||'');
+      renderDqHostTrigger();
+      renderDqItemTrigger();
+      // Load items after hosts are set (keep UI responsive)
+      if(status) status.textContent = 'Loaded '+hostids.length+' host'+(hostids.length===1?'':'s')+' — loading items…';
+      try{
+        q.hostsWithItems = hostids.length ? await fetchHostsItems(hostids) : [];
+      }catch(itemErr){
+        console.warn('fetchHostsItems', itemErr);
+        q.hostsWithItems = [];
+      }
+      renderDqItemOptions('');
+      renderDqItemTrigger();
+      if(status){
+        const nItems = (function(){
+          let n = 0;
+          (q.hostsWithItems||[]).forEach(function(h){ n += (h.items||[]).length; });
+          return n;
+        })();
+        status.textContent = 'Loaded '+hostids.length+' host'+(hostids.length===1?'':'s')+
+          ' from '+gids.length+' group'+(gids.length===1?'':'s')+
+          (nItems ? (' · '+nItems+' items available') : '')+'.';
+      }
+    }catch(err){
+      if(status){ status.textContent = 'Failed: '+(err.message||err); status.className='status-msg warn'; }
+    }
+  }
+  const groupsTrigger = document.getElementById('dqGroupsTrigger');
+  if(groupsTrigger){
+    groupsTrigger.addEventListener('click', function(){
+      const panel = document.getElementById('dqGroupsPanel');
+      if(!panel) return;
+      const open = panel.style.display !== 'block';
+      // close other pickers
+      document.querySelectorAll('.picker-panel').forEach(function(p){ p.classList.remove('open'); p.style.display = ''; });
+      document.querySelectorAll('.picker-trigger').forEach(function(t){ t.classList.remove('open'); });
+      if(open){
+        panel.style.display = 'block';
+        groupsTrigger.classList.add('open');
+        renderDqGroupOptions(document.getElementById('dqGroupsSearch')?.value||'');
+        const s = document.getElementById('dqGroupsSearch');
+        if(s) s.focus();
+      }
+    });
+  }
+  const groupsSearch = document.getElementById('dqGroupsSearch');
+  if(groupsSearch) groupsSearch.addEventListener('input', function(e){ renderDqGroupOptions(e.target.value); });
+  renderDqGroupOptions('');
+  renderDqGroupTrigger();
+
+
+  // Value (aggregation) multi-toggle: min / avg / max / last
+  if(!q.aggregations || !q.aggregations.length) q.aggregations = ['avg'];
+  function syncDqAggBar(){
+    const bar = document.getElementById('dqAggBar');
+    if(!bar) return;
+    const set = new Set(q.aggregations || []);
+    bar.querySelectorAll('[data-agg]').forEach(function(btn){
+      btn.classList.toggle('active', set.has(btn.getAttribute('data-agg')));
+    });
+  }
+  const aggBar = document.getElementById('dqAggBar');
+  if(aggBar){
+    aggBar.querySelectorAll('[data-agg]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        const a = btn.getAttribute('data-agg');
+        const set = new Set(q.aggregations || []);
+        if(set.has(a)){
+          if(set.size <= 1) return; // keep at least one
+          set.delete(a);
+        } else {
+          set.add(a);
+        }
+        // stable order
+        q.aggregations = ['min','avg','max','last'].filter(function(x){ return set.has(x); });
+        syncDqAggBar();
+      });
+    });
+    syncDqAggBar();
+  }
 
   const clearBtn = document.getElementById('dqClearBtn');
   if(clearBtn) clearBtn.addEventListener('click', function(){
@@ -757,12 +1083,17 @@ function wireDashQuickView(){
     q.selectedItems = [];
     q.selectedItemQuery = '';
     q.selectedItemLabel = '';
-    const groupEl = document.getElementById('dqGroup');
-    if(groupEl) groupEl.value = '';
+    q.groupids = [];
+    q._hostsFromGroups = false;
+    q.scopedHosts = [];
+    const groupSearch = document.getElementById('dqGroupsSearch');
+    if(groupSearch) groupSearch.value = '';
     const hostSearch = document.getElementById('dqHostsSearch');
     if(hostSearch) hostSearch.value = '';
     const itemSearch = document.getElementById('dqItemSearch');
     if(itemSearch) itemSearch.value = '';
+    renderDqGroupOptions('');
+    renderDqGroupTrigger();
     renderDqHostOptions('');
     renderDqHostTrigger();
     renderDqItemOptions('');
@@ -770,7 +1101,8 @@ function wireDashQuickView(){
     const results = document.getElementById('dqResults');
     if(results) results.innerHTML = '';
     const status = document.getElementById('dqStatus');
-    if(status){ status.textContent = 'Selection cleared.'; status.className = 'status-msg'; }
+    if(status){ status.textContent = ''; status.className = 'status-msg'; }
+    showToast('Selection cleared.', { type: 'info' });
   });
 
   document.getElementById('dqRunBtn').addEventListener('click', async function(){
@@ -805,11 +1137,16 @@ function wireDashQuickView(){
           else missingNames.push(h.name||h.host||h.hostid);
         });
         if(mapped){
+          const aggs = (q.aggregations && q.aggregations.length) ? q.aggregations.slice() : ['avg'];
           columns.push({
             id: 'col_q'+idx, label: it.label || it.query,
-            aggregations: ['avg','min','max','last'],
+            aggregations: aggs,
+            // Quick view: base values from API (mult=1); unit/mult editable under header
+            display: 'number',
             multiplier: 1, unit: '', decimals: 2, color_mode: 'none',
-            thresholds: { mode: 'off', yellow: 75, red: 90 }, host_items: host_items,
+            thresholds: { mode: 'off', yellow: 75, red: 90 },
+            raw: true, // do not auto-apply Zabbix item units
+            host_items: host_items,
           });
         }
         if(missingNames.length){
@@ -833,6 +1170,7 @@ function wireDashQuickView(){
       };
       const res = await apiFetch('/api/dashboards/run-adhoc', {
         method: 'POST',
+        timeoutMs: 60000,
         body: JSON.stringify(Object.assign({
           name: 'adhoc', hostids: q.hostids, columns: columns,
           date_from: dateFrom, date_to: dateTo,
@@ -840,7 +1178,7 @@ function wireDashQuickView(){
       });
       if(!res.ok){
         const err = await res.json().catch(function(){ return {}; });
-        throw new Error(err.detail || ('HTTP '+res.status));
+        throw new Error((typeof formatApiDetail === 'function' ? formatApiDetail(err.detail, 'HTTP '+res.status) : (err.detail && (err.detail.message || JSON.stringify(err.detail))) || ('HTTP '+res.status)));
       }
       const data = await res.json();
       let prevResult = null;
@@ -865,15 +1203,17 @@ function wireDashQuickView(){
         });
         return;
       }
-      results.innerHTML = computeInsightStrip({ columns: columns }, data) +
-        (prevResult ? computeCompareStrip({ columns: columns }, data, prevResult) : '') +
-        '<div class="table-tools">'+
-          '<input type="search" id="dqTableSearch" placeholder="Filter rows…">'+
-          '<span class="table-tools-spacer"></span>'+
-          '<span class="table-tools-group">'+
-            '<button type="button" class="chip-btn" id="dqExportBtn">Export CSV</button>'+
-            '<button type="button" class="chip-btn" id="dqExportPdfBtn">Export PDF</button>'+
-          '</span>'+
+      dashState.quickLast = { columns: columns, data: data, prevResult: prevResult, dateFrom: dateFrom, dateTo: dateTo, hours: hours };
+      results.innerHTML =
+        '<div class="metrics-results-toolbar">'+
+          computeInsightStrip({ columns: columns }, data) +
+          '<div class="table-tools metrics-tools">'+
+            '<input type="search" id="dqTableSearch" placeholder="Filter rows…">'+
+            '<span class="table-tools-group">'+
+              '<button type="button" class="btn-export" id="dqExportBtn">Export CSV</button>'+
+              '<button type="button" class="btn-export" id="dqExportPdfBtn">Export PDF</button>'+
+            '</span>'+
+          '</div>'+
         '</div>'+
         renderPivot({ name: 'Quick view', columns: columns }, data, prevResult) +
         (auditLines.length ? '<div class="audit-box">'+auditLines.join('<br>')+'</div>' : '');
@@ -882,6 +1222,11 @@ function wireDashQuickView(){
       wireTableSearch(document.getElementById('dqTableSearch'), tbl);
       wirePivotStickyHeaders(results);
       wirePivotDrilldown(results, dateFrom, dateTo, hours);
+      // Enable host detail drawer (same as saved dashboards)
+      dashState.current = { name: 'Quick view', columns: columns };
+      wireHostDetailLinks(results, dateFrom, dateTo, hours);
+      wireInsightHealthFilter(results);
+      wireQuickColControls(results);
       const exportMeta = {
         title: 'Metrics quick view',
         dateFrom: dateFrom,
@@ -890,16 +1235,45 @@ function wireDashQuickView(){
         day_time_to: hours.day_time_to,
         comparePrev: comparePrev,
       };
+      const qBase = (typeof sanitizeExportFilename === 'function'
+        ? sanitizeExportFilename(exportMeta.title, 'metrics-quick')
+        : 'metrics-quick');
+      function doCsv(){ exportVisibleTable(results, qBase + '.csv', exportMeta); }
+      function doPdf(){ exportVisibleTablePdf(results, qBase + '.pdf', exportMeta); }
       const ex = document.getElementById('dqExportBtn');
-      if(ex) ex.addEventListener('click', function(){ exportVisibleTable(results, 'metrics-quick.csv', exportMeta); });
+      if(ex) ex.addEventListener('click', doCsv);
       const exPdf = document.getElementById('dqExportPdfBtn');
-      if(exPdf) exPdf.addEventListener('click', function(){ exportVisibleTablePdf(results, 'metrics-quick.pdf', exportMeta); });
+      if(exPdf) exPdf.addEventListener('click', doPdf);
+      // Top bar export buttons (mockup placement)
+      const exTop = document.getElementById('dqExportBtnTop');
+      if(exTop){ exTop.disabled = false; exTop.onclick = doCsv; }
+      const exPdfTop = document.getElementById('dqExportPdfBtnTop');
+      if(exPdfTop){ exPdfTop.disabled = false; exPdfTop.onclick = doPdf; }
     }catch(err){
       status.textContent = '';
       status.className='status-msg';
+      var msg = '';
+      try{
+        if(typeof formatApiDetail === 'function'){
+          msg = formatApiDetail(
+            (err && err.detail != null) ? err.detail : (err && err.message != null ? err.message : err),
+            'Request failed'
+          );
+        } else if(err && err.message){
+          msg = String(err.message);
+        } else if(typeof err === 'string'){
+          msg = err;
+        } else {
+          try{ msg = JSON.stringify(err); }catch(_e){ msg = 'Request failed'; }
+        }
+      }catch(_e){ msg = 'Request failed'; }
+      if(!msg || msg === '[object Object]'){
+        msg = 'Request failed — open the browser console (F12) for details.';
+      }
+      console.error('Quick view metrics error', err);
       results.innerHTML = errorStateHtml({
         title: 'Could not load metrics',
-        body: err.message || String(err),
+        body: msg,
         retryId: 'dqRetryBtn',
       });
       const retry = document.getElementById('dqRetryBtn');
@@ -949,12 +1323,14 @@ async function openBuilder(existing){
         name: existing.name,
         hostids: (existing.hostids||[]).map(function(id){ return parseInt(id,10); }),
         columns: JSON.parse(JSON.stringify(existing.columns||[])),
-        selectedGroupId: null,
+        selectedGroupIds: Array.isArray(existing.selectedGroupIds)
+          ? existing.selectedGroupIds.map(function(id){ return parseInt(id,10); }).filter(Boolean)
+          : (existing.selectedGroupId ? [parseInt(existing.selectedGroupId,10)] : []),
         is_shared: !!existing.is_shared,
         shared_userids: existing.shared_userids || [],
         shared_usrgrpids: existing.shared_usrgrpids || [],
       }
-    : { id: null, name: '', hostids: [], columns: [], selectedGroupId: null, is_shared: false, shared_userids: [], shared_usrgrpids: [] };
+    : { id: null, name: '', hostids: [], columns: [], selectedGroupIds: [], is_shared: false, shared_userids: [], shared_usrgrpids: [] };
   await loadShareDirectories();
   (dashState.builder.columns||[]).forEach(function(c){
     if(!c.thresholds) c.thresholds = { mode: 'off', yellow: 75, red: 90 };
@@ -983,33 +1359,30 @@ async function openBuilder(existing){
 function renderBuilder(){
   const b = dashState.builder;
   const root = dashRoot();
-  const groupOpts = ['<option value="">— optional host group —</option>'].concat(
-    (dashState.allGroups||[]).map(function(g){
-      const sel = String(b.selectedGroupId||'')===String(g.groupid)?' selected':'';
-      return '<option value="'+g.groupid+'"'+sel+'>'+g.name+' ('+(g.host_count||0)+')</option>';
-    })
-  ).join('');
+  if(!Array.isArray(b.selectedGroupIds)) b.selectedGroupIds = [];
 
   root.innerHTML =
     '<div class="filterbar">'+
-      '<div class="builder-head">'+
-        '<div class="field" style="flex:1.2"><label for="dashName">Name</label>'+
+      '<div class="builder-head builder-meta-row">'+
+        '<div class="field builder-field-name"><label for="dashName">Name</label>'+
           '<input id="dashName" placeholder="e.g. Campus CPU & memory" value="'+String(b.name||'').replace(/"/g,'&quot;')+'"></div>'+
-        '<div class="field" style="flex:0 0 auto"><label>&nbsp;</label>'+
-          '<label style="display:flex;align-items:center;gap:6px;height:38px;font-size:12px;color:var(--text-dim);white-space:nowrap;">'+
-            '<input type="checkbox" id="dashShared"'+(b.is_shared?' checked':'')+'> Shared with all users'+
-          '</label></div>'+
-        '</div>'+
-        '<div class="field share-field">'+
-          sharePickerHtml('dashShare', b.shared_userids || [], b.shared_usrgrpids || [])+
-        '</div>'+
-        '<div class="row">'+
-        '<div class="field" style="flex:1"><label for="dashGroup">Host group</label><select id="dashGroup">'+groupOpts+'</select></div>'+
-        '<div class="field" style="flex:0 0 auto"><label>&nbsp;</label>'+
-          '<button type="button" class="btn btn-ghost" id="dashLoadGroupBtn" style="height:38px;">Load hosts from group</button></div>'+
-        '<div class="field" style="flex:1.5"><label>Hosts</label>'+
+        sharePickerHtml('dashShare', b.shared_userids || [], b.shared_usrgrpids || [])+
+      '</div>'+
+        '<div class="row builder-scope-row">'+
+        '<div class="field builder-field-groups"><label>Host groups</label>'+
+          '<div class="picker" id="dashGroupsPicker">'+
+            '<div class="picker-trigger" id="dashGroupsTrigger" tabindex="0">'+
+              '<span class="picker-placeholder" id="dashGroupsPlaceholder">Select host groups…</span>'+
+              '<svg class="picker-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
+            '</div>'+
+            '<div class="picker-panel" id="dashGroupsPanel">'+
+              '<input class="picker-search" id="dashGroupsSearch" placeholder="Filter groups…" autocomplete="off">'+
+              '<div class="picker-list" id="dashGroupsList"></div>'+
+            '</div>'+
+          '</div></div>'+
+        '<div class="field builder-field-hosts"><label>Hosts</label>'+
           '<div class="picker" id="dashHostsPicker">'+
-            '<div class="picker-trigger" id="dashHostsTrigger" tabindex="0">'+
+            '<div class="picker-trigger picker-trigger-compact" id="dashHostsTrigger" tabindex="0">'+
               '<span class="picker-placeholder" id="dashHostsPlaceholder">Select hosts…</span>'+
               '<svg class="picker-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
             '</div>'+
@@ -1019,59 +1392,187 @@ function renderBuilder(){
             '</div>'+
           '</div></div>'+
       '</div>'+
-      '<div class="eyebrow" style="margin:16px 0 8px;">Columns</div>'+
+      '<div class="eyebrow" style="margin:12px 0 6px;">Columns</div>'+
       '<div class="col-rows" id="colRows"></div>'+
       '<button type="button" class="add-col-btn" id="addColBtn">+ Add column</button>'+
-      '<div class="eyebrow" style="margin:16px 0 8px;">Item mapping</div>'+
+      '<div class="eyebrow" style="margin:12px 0 6px;">Item mapping</div>'+
       '<div id="mapGrid"></div>'+
       '<div class="actions-row" style="margin-top:16px;">'+
         '<button class="btn btn-primary" id="saveDashBtn">Save dashboard</button>'+
+        '<button type="button" class="btn btn-ghost" id="previewDashBtn">Preview</button>'+
         '<button class="btn btn-ghost" id="cancelDashBtn" type="button">Cancel</button>'+
         '<span class="status-msg" id="builderStatus"></span>'+
       '</div>'+
+      '<div class="builder-preview" id="builderPreview" hidden></div>'+
     '</div>';
 
+  renderBuilderGroupOptions();
+  renderBuilderGroupTrigger();
   renderHostPickerOptions();
   renderHostPickerTrigger();
   renderColRows();
   renderMapGrid();
 
-  document.getElementById('dashHostsTrigger').addEventListener('click', function(){
-    const panel = document.getElementById('dashHostsPanel');
+  function togglePicker(triggerId, panelId, searchId){
+    const panel = document.getElementById(panelId);
+    const trigger = document.getElementById(triggerId);
+    if(!panel || !trigger) return;
     const open = !panel.classList.contains('open');
-    panel.classList.toggle('open', open);
-    document.getElementById('dashHostsTrigger').classList.toggle('open', open);
-    if(open) document.getElementById('dashHostsSearch').focus();
+    if(typeof closeAllOpenPickers === 'function') closeAllOpenPickers(open ? panel : null);
+    else {
+      document.querySelectorAll('.picker-panel').forEach(function(p){ p.classList.remove('open'); p.style.display = ''; });
+      document.querySelectorAll('.picker-trigger').forEach(function(t){ t.classList.remove('open'); });
+    }
+    if(open){
+      panel.classList.add('open');
+      panel.style.display = 'block';
+      trigger.classList.add('open');
+      const s = document.getElementById(searchId);
+      if(s) s.focus();
+    }
+  }
+
+  document.getElementById('dashGroupsTrigger').addEventListener('click', function(){
+    togglePicker('dashGroupsTrigger', 'dashGroupsPanel', 'dashGroupsSearch');
+  });
+  document.getElementById('dashGroupsSearch').addEventListener('input', function(e){
+    renderBuilderGroupOptions(e.target.value);
+  });
+  document.getElementById('dashHostsTrigger').addEventListener('click', function(){
+    togglePicker('dashHostsTrigger', 'dashHostsPanel', 'dashHostsSearch');
   });
   document.getElementById('dashHostsSearch').addEventListener('input', function(e){ renderHostPickerOptions(e.target.value); });
-  document.getElementById('dashLoadGroupBtn').addEventListener('click', async function(){
-    const gid = document.getElementById('dashGroup').value;
-    const status = document.getElementById('builderStatus');
-    if(!gid){ status.textContent='Pick a group.'; status.className='status-msg warn'; return; }
-    status.textContent='Loading hosts…';
-    try{
-      const res = await apiFetch('/api/hostgroups/'+gid+'/hosts');
-      if(!res.ok) throw new Error('HTTP '+res.status);
-      const hosts = await res.json();
-      b.selectedGroupId = parseInt(gid,10);
-      b.hostids = hosts.map(function(h){ return parseInt(h.hostid,10); });
-      dashState.builderHosts = await fetchHostsItems(b.hostids);
-      renderHostPickerOptions(); renderHostPickerTrigger(); renderMapGrid();
-      status.textContent = 'Loaded '+b.hostids.length+' hosts.';
-    }catch(err){
-      status.textContent = 'Failed: '+(err.message||err);
-      status.className='status-msg warn';
-    }
-  });
   document.getElementById('addColBtn').addEventListener('click', function(){
     b.columns.push(newColumn());
     renderColRows();
     renderMapGrid();
   });
   document.getElementById('saveDashBtn').addEventListener('click', saveDashboard);
+  document.getElementById('previewDashBtn').addEventListener('click', previewMetricsBuilder);
   document.getElementById('cancelDashBtn').addEventListener('click', showDashboardList);
   wireShareRetry('dashShare', renderBuilder);
   wireSharePicker('dashShare');
+}
+
+
+function renderBuilderGroupOptions(filter){
+  const list = document.getElementById('dashGroupsList');
+  const b = dashState.builder;
+  if(!list || !b) return;
+  if(!Array.isArray(b.selectedGroupIds)) b.selectedGroupIds = [];
+  const f = (filter||'').trim().toLowerCase();
+  const selected = new Set(b.selectedGroupIds.map(function(id){ return parseInt(id,10); }));
+  const groups = dashState.allGroups || [];
+  const rows = groups.filter(function(g){
+    const label = String(g.name||g.groupid||'');
+    return !f || label.toLowerCase().includes(f);
+  });
+  list.innerHTML = rows.length ? rows.map(function(g){
+    const gid = parseInt(g.groupid,10);
+    const on = selected.has(gid);
+    const cnt = g.host_count;
+    const label = escHtml(g.name||('Group '+gid))+(cnt!=null ? ' ('+cnt+')' : '');
+    return '<label class="picker-option">'+
+      '<input type="checkbox" data-groupid="'+gid+'"'+(on?' checked':'')+'>'+
+      '<div class="opt-main"><div class="opt-name">'+label+'</div></div></label>';
+  }).join('') : '<div class="picker-empty">No groups match.</div>';
+  list.querySelectorAll('input[type=checkbox]').forEach(function(cb){
+    cb.addEventListener('change', async function(){
+      const gid = parseInt(cb.getAttribute('data-groupid'),10);
+      if(cb.checked){
+        if(b.selectedGroupIds.indexOf(gid) < 0) b.selectedGroupIds.push(gid);
+      } else {
+        b.selectedGroupIds = b.selectedGroupIds.filter(function(id){ return parseInt(id,10) !== gid; });
+      }
+      renderBuilderGroupOptions(document.getElementById('dashGroupsSearch')?.value||'');
+      renderBuilderGroupTrigger();
+      await loadBuilderHostsFromGroups();
+    });
+  });
+}
+
+function renderBuilderGroupTrigger(){
+  const ph = document.getElementById('dashGroupsPlaceholder');
+  const b = dashState.builder;
+  if(!ph || !b) return;
+  if(!Array.isArray(b.selectedGroupIds)) b.selectedGroupIds = [];
+  const n = b.selectedGroupIds.length;
+  if(!n){
+    ph.textContent = 'Select host groups…';
+    ph.classList.remove('picker-summary');
+    return;
+  }
+  const selected = (dashState.allGroups||[]).filter(function(g){
+    return b.selectedGroupIds.indexOf(parseInt(g.groupid,10)) >= 0;
+  });
+  const names = selected.map(function(g){
+    const cnt = g.host_count;
+    return (g.name||g.groupid)+(cnt!=null ? ' ('+cnt+')' : '');
+  });
+  ph.textContent = n === 1 ? names[0] : (n+' groups selected');
+  ph.title = names.join(', ');
+  ph.classList.add('picker-summary');
+}
+
+async function loadBuilderHostsFromGroups(){
+  const b = dashState.builder;
+  const status = document.getElementById('builderStatus');
+  if(!b) return;
+  if(!Array.isArray(b.selectedGroupIds)) b.selectedGroupIds = [];
+  const gids = b.selectedGroupIds.slice();
+  if(!gids.length){
+    // Clearing all groups clears host selection driven by groups
+    b.hostids = [];
+    dashState.builderHosts = [];
+    renderHostPickerOptions();
+    renderHostPickerTrigger();
+    renderMapGrid();
+    if(status){ status.textContent = ''; status.className = 'status-msg'; }
+    return;
+  }
+  if(status){ status.textContent = 'Loading hosts from '+gids.length+' group'+(gids.length===1?'':'s')+'…'; status.className = 'status-msg'; }
+  try{
+    const results = await Promise.all(gids.map(function(gid){
+      return apiFetch('/api/hostgroups/'+gid+'/hosts').then(function(res){
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        return res.json();
+      });
+    }));
+    const seen = {};
+    const hostids = [];
+    const hostObjs = [];
+    results.forEach(function(hosts){
+      (hosts||[]).forEach(function(h){
+        const id = parseInt(h.hostid,10);
+        if(!seen[id]){
+          seen[id] = true;
+          hostids.push(id);
+          hostObjs.push(h);
+        }
+      });
+    });
+    if(!dashState.allHosts) dashState.allHosts = [];
+    const known = {};
+    dashState.allHosts.forEach(function(h){ known[parseInt(h.hostid,10)] = true; });
+    hostObjs.forEach(function(h){
+      const id = parseInt(h.hostid,10);
+      if(!known[id]) dashState.allHosts.push(h);
+    });
+    b.hostids = hostids;
+    dashState.builderHosts = hostids.length ? await fetchHostsItems(hostids) : [];
+    renderHostPickerOptions();
+    renderHostPickerTrigger();
+    renderMapGrid();
+    if(status){
+      status.textContent = 'Loaded '+hostids.length+' host'+(hostids.length===1?'':'s')+' from '+gids.length+' group'+(gids.length===1?'':'s')+'.';
+      status.className = 'status-msg';
+    }
+  }catch(err){
+    if(status){
+      status.textContent = 'Failed: '+(err.message||err);
+      status.className = 'status-msg warn';
+    }
+  }
 }
 
 function renderHostPickerOptions(filter){
@@ -1108,25 +1609,32 @@ function renderHostPickerTrigger(){
   if(!trigger || !dashState.builder) return;
   trigger.querySelectorAll('.pill').forEach(function(p){ p.remove(); });
   const ids = dashState.builder.hostids || [];
-  if(!ids.length){ placeholder.style.display=''; return; }
-  placeholder.style.display='none';
-  ids.forEach(function(hostid){
+  if(!ids.length){
+    placeholder.style.display = '';
+    placeholder.textContent = 'Select hosts…';
+    placeholder.classList.remove('picker-summary');
+    placeholder.title = '';
+    return;
+  }
+  // Compact summary — full list stays in the dropdown
+  placeholder.style.display = '';
+  const n = ids.length;
+  if(n <= 3){
+    const names = ids.map(function(hostid){
+      const hid = parseInt(hostid,10);
+      const h = (dashState.allHosts||[]).find(function(x){ return parseInt(x.hostid,10)===hid; });
+      return h ? (h.name||h.host) : String(hid);
+    });
+    placeholder.textContent = names.join(', ');
+  } else {
+    placeholder.textContent = n + ' hosts selected';
+  }
+  placeholder.title = ids.map(function(hostid){
     const hid = parseInt(hostid,10);
     const h = (dashState.allHosts||[]).find(function(x){ return parseInt(x.hostid,10)===hid; });
-    const pill = document.createElement('span');
-    pill.className = 'pill';
-    pill.innerHTML = (h?(h.name||h.host):hid)+
-      ' <button type="button"><svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M6 6L18 18M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>';
-    pill.querySelector('button').addEventListener('click', async function(e){
-      e.stopPropagation();
-      dashState.builder.hostids = dashState.builder.hostids.filter(function(id){ return parseInt(id,10)!==hid; });
-      renderHostPickerTrigger();
-      renderHostPickerOptions(document.getElementById('dashHostsSearch')?.value||'');
-      dashState.builderHosts = dashState.builder.hostids.length ? await fetchHostsItems(dashState.builder.hostids) : [];
-      renderMapGrid();
-    });
-    trigger.insertBefore(pill, trigger.querySelector('.picker-chevron'));
-  });
+    return h ? (h.name||h.host) : String(hid);
+  }).join(', ');
+  placeholder.classList.add('picker-summary');
 }
 
 function renderColRows(){
@@ -1134,7 +1642,19 @@ function renderColRows(){
   const wrap = document.getElementById('colRows');
   if(!wrap) return;
   if(!b.columns.length){
-    wrap.innerHTML = '<div class="picker-empty">No columns yet — add a metric column.</div>';
+    wrap.innerHTML =
+      '<div class="col-empty-cta">'+
+        '<button type="button" class="btn btn-primary" id="addColEmptyBtn">+ Add Metric Column</button>'+
+        '<div class="col-empty-hint">Define metrics to map across your selected hosts.</div>'+
+      '</div>';
+    const emptyBtn = document.getElementById('addColEmptyBtn');
+    if(emptyBtn){
+      emptyBtn.addEventListener('click', function(){
+        b.columns.push(newColumn());
+        renderColRows();
+        renderMapGrid();
+      });
+    }
     return;
   }
   const presets = (typeof THRESH_PRESETS !== 'undefined' && THRESH_PRESETS) ? THRESH_PRESETS : [];
@@ -1456,6 +1976,8 @@ function renderMapGrid(){
               key_: it.key_||'',
             };
           }
+          // Replace placeholder "New metric" with a real telemetry name
+          if(it) maybeApplyMetricLabelFromItem(col, it);
           input.value = formatMappedItemLabel(iid, combo.dataset.host);
           const crossNow = String(srcHostid)!==String(combo.dataset.host);
           combo.classList.remove('map-missing');
@@ -1559,26 +2081,162 @@ function applyItemToColumn(colId, query){
   const col = dashState.builder.columns.find(function(c){ return c.id === colId; });
   if(!col) return;
   let mapped = 0;
+  let firstMatch = null;
   (dashState.builderHosts||[]).forEach(function(h){
     const match = matchItemOnHost(h, query);
     if(match){
       if(!col.host_items) col.host_items = {};
       col.host_items[String(h.hostid)] = parseInt(match.itemid,10);
+      if(!firstMatch) firstMatch = match;
       mapped++;
     } else if(col.host_items){
       delete col.host_items[String(h.hostid)];
     }
   });
+  if(firstMatch) maybeApplyMetricLabelFromItem(col, firstMatch);
+  renderColRows();
   renderMapGrid();
   const status = document.getElementById('builderStatus');
   if(status) status.textContent = 'Mapped "'+query+'" on '+mapped+' host(s).';
 }
 
+
+function syncBuilderColumnsFromDom(){
+  const b = dashState.builder;
+  if(!b) return;
+  document.querySelectorAll('#colRows .col-row').forEach(function(rowEl){
+    const col = b.columns.find(function(c){ return c.id === rowEl.dataset.col; });
+    if(!col) return;
+    const labelEl = rowEl.querySelector('.col-label');
+    const multEl = rowEl.querySelector('.col-mult');
+    const unitEl = rowEl.querySelector('.col-unit');
+    const dispEl = rowEl.querySelector('.col-display');
+    const modeEl = rowEl.querySelector('.col-th-mode');
+    const yEl = rowEl.querySelector('.col-th-yellow');
+    const rEl = rowEl.querySelector('.col-th-red');
+    if(labelEl) col.label = labelEl.value;
+    if(multEl) col.multiplier = parseFloat(multEl.value) || 1;
+    if(unitEl) col.unit = unitEl.value;
+    if(dispEl && dispEl.value) col.display = dispEl.value;
+    if(!col.thresholds) col.thresholds = { mode: 'off', yellow: 75, red: 90 };
+    if(modeEl) col.thresholds.mode = modeEl.value;
+    if(yEl && yEl.value !== '') col.thresholds.yellow = parseFloat(yEl.value);
+    if(rEl && rEl.value !== '') col.thresholds.red = parseFloat(rEl.value);
+    const aggs = Array.from(rowEl.querySelectorAll('.agg-group input:checked')).map(function(cb){ return cb.value; });
+    if(aggs.length) col.aggregations = aggs;
+  });
+}
+
+function builderColumnsPayload(){
+  const b = dashState.builder;
+  syncBuilderColumnsFromDom();
+  return (b.columns || []).map(function(c){
+    const hi = {};
+    const raw = c.host_items || {};
+    Object.keys(raw).forEach(function(k){
+      const v = parseInt(raw[k], 10);
+      if(!isNaN(v)) hi[String(k)] = v;
+    });
+    const disp = (['bar','number_bar','graph','number_graph'].indexOf(c.display) >= 0) ? c.display : 'number';
+    return {
+      id: c.id,
+      label: c.label,
+      aggregations: c.aggregations && c.aggregations.length ? c.aggregations : ['avg'],
+      multiplier: c.multiplier != null ? c.multiplier : 1,
+      unit: c.unit || '',
+      decimals: c.decimals != null ? c.decimals : 1,
+      color_mode: c.color_mode || 'none',
+      display: disp,
+      thresholds: c.thresholds || { mode: 'off', yellow: 75, red: 90 },
+      host_items: hi,
+    };
+  });
+}
+
+async function previewMetricsBuilder(){
+  const b = dashState.builder;
+  const statusEl = document.getElementById('builderStatus');
+  const previewEl = document.getElementById('builderPreview');
+  if(!b || !previewEl) return;
+  if(!b.hostids || !b.hostids.length){
+    if(statusEl){ statusEl.textContent = 'Select hosts before preview.'; statusEl.className = 'status-msg warn'; }
+    return;
+  }
+  if(!b.columns || !b.columns.length){
+    if(statusEl){ statusEl.textContent = 'Add a metric column before preview.'; statusEl.className = 'status-msg warn'; }
+    return;
+  }
+  const columns = builderColumnsPayload();
+  const mapped = columns.some(function(c){ return c.host_items && Object.keys(c.host_items).length; });
+  if(!mapped){
+    if(statusEl){ statusEl.textContent = 'Map items on hosts before preview.'; statusEl.className = 'status-msg warn'; }
+    return;
+  }
+  if(statusEl){ statusEl.textContent = 'Running preview…'; statusEl.className = 'status-msg'; }
+  previewEl.hidden = false;
+  previewEl.innerHTML = loadingStateHtml('Preview — last 24 hours…');
+
+  const dateTo = Math.floor(Date.now() / 1000);
+  const dateFrom = dateTo - 24 * 3600;
+  const dayPayload = { tz_offset_min: (typeof apiTzOffsetMin === 'function' ? apiTzOffsetMin() : 0) };
+  const dashboard = { name: (b.name || 'Preview') + ' (preview)', hostids: b.hostids, columns: columns };
+
+  try{
+    const res = await apiFetch('/api/dashboards/run-adhoc', {
+      method: 'POST',
+      timeoutMs: 60000,
+      body: JSON.stringify(Object.assign({
+        name: 'preview',
+        hostids: b.hostids,
+        columns: columns,
+        date_from: dateFrom,
+        date_to: dateTo,
+      }, dayPayload)),
+    });
+    if(!res.ok){
+      const err = await res.json().catch(function(){ return {}; });
+      throw new Error(typeof formatApiDetail === 'function' ? formatApiDetail(err.detail, 'Preview failed') : (err.detail || 'Preview failed'));
+    }
+    const result = await res.json();
+    if(!(result.rows || []).length){
+      previewEl.innerHTML = emptyResultHtml({
+        title: 'No data in the last 24 hours',
+        body: 'Try mapping different items or check that hosts have recent values.',
+      });
+      if(statusEl){ statusEl.textContent = ''; statusEl.className = 'status-msg'; }
+      return;
+    }
+    previewEl.innerHTML =
+      '<div class="builder-preview-head">'+
+        '<span class="eyebrow" style="margin:0;">Preview · last 24h</span>'+
+        '<button type="button" class="chip-btn" id="builderPreviewClose">Close</button>'+
+      '</div>'+
+      '<div class="metrics-results-toolbar">'+
+        computeInsightStrip(dashboard, result) +
+      '</div>'+
+      renderPivot(dashboard, result, null);
+    const closeBtn = document.getElementById('builderPreviewClose');
+    if(closeBtn) closeBtn.addEventListener('click', function(){ previewEl.hidden = true; previewEl.innerHTML = ''; });
+    const tbl = previewEl.querySelector('table');
+    if(typeof makeTableSortable === 'function') makeTableSortable(tbl);
+    if(typeof wirePivotStickyHeaders === 'function') wirePivotStickyHeaders(previewEl);
+    if(typeof wireInsightHealthFilter === 'function') wireInsightHealthFilter(previewEl);
+    if(statusEl){ statusEl.textContent = 'Preview ready.'; statusEl.className = 'status-msg'; }
+    previewEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }catch(err){
+    previewEl.innerHTML = errorStateHtml({
+      title: 'Preview failed',
+      body: err.message || String(err),
+    });
+    if(statusEl){ statusEl.textContent = err.message || String(err); statusEl.className = 'status-msg warn'; }
+  }
+}
+
 async function saveDashboard(){
   const b = dashState.builder;
   b.name = document.getElementById('dashName').value.trim();
-  const sharedEl = document.getElementById('dashShared');
-  b.is_shared = sharedEl ? !!sharedEl.checked : !!b.is_shared;
+  // is_shared remains as stored on the builder object (UI checkbox removed)
+  b.is_shared = !!b.is_shared;
   const statusEl = document.getElementById('builderStatus');
   if(!b.name){ statusEl.textContent='Name required.'; statusEl.className='status-msg warn'; return; }
   if(!b.hostids.length){ statusEl.textContent='Select hosts.'; statusEl.className='status-msg warn'; return; }
@@ -1643,7 +2301,7 @@ async function saveDashboard(){
     const res = await apiFetch(url, { method: method, body: JSON.stringify(payload) });
     if(!res.ok){
       const err = await res.json().catch(function(){ return {}; });
-      throw new Error(err.detail || 'Save failed');
+      throw new Error(formatApiDetail(err.detail, 'Save failed'));
     }
     showDashboardList();
   }catch(err){
@@ -1681,31 +2339,26 @@ async function openRun(dashId){
   const nowSec = Math.floor(Date.now()/1000);
   const fromVal = fromEpochToLocalInput(nowSec - 24*3600);
   const toVal = fromEpochToLocalInput(nowSec);
-  const lab = tzLabel();
   dashRoot().innerHTML =
-    '<div class="filterbar dash-run-bar">'+
-      /* Row 1: title + date range */
-      '<div class="dash-run-row">'+
+    '<div class="filterbar dash-run-bar dash-run-bar-compact dash-run-bar-ref">'+
+      '<div class="dash-run-row dash-run-row-compact">'+
         '<div class="dash-run-title"><div class="eyebrow" style="margin-bottom:2px;">Dashboard</div>'+
           '<h3 style="margin:0;font-size:15px;line-height:1.25;">'+escHtml(dashboard.name)+shareBadgeHtml(dashboard)+'</h3></div>'+
-        '<div class="field dash-run-date"><label for="dashFrom">From ('+lab+')</label>'+
+        '<div class="field dash-run-date"><label for="dashFrom">From</label>'+
           '<input type="datetime-local" id="dashFrom" value="'+fromVal+'"></div>'+
-        '<div class="field dash-run-date"><label for="dashTo">To ('+lab+')</label>'+
+        '<div class="field dash-run-date"><label for="dashTo">To</label>'+
           '<input type="datetime-local" id="dashTo" value="'+toVal+'"></div>'+
         datePresetBar('dashFrom','dashTo')+
-      '</div>'+
-      /* Row 2: hours + actions */
-      '<div class="dash-run-row dash-run-row-actions">'+
         dayHoursPresetBar('dashDayFrom','dashDayTo','dashDay')+
         '<div class="dash-run-actions">'+
-          '<button class="btn btn-primary" id="runDashBtn"><span class="spinner"></span><span class="btn-label">Run</span></button>'+
-          '<button class="btn btn-ghost" id="backToListBtn" type="button">← All dashboards</button>'+
           '<label class="dash-run-compare"><input type="checkbox" id="dashComparePrev"> Compare previous</label>'+
+          '<button class="btn btn-primary" id="runDashBtn"><span class="spinner"></span><span class="btn-label">Show metrics</span></button>'+
+          '<button class="btn btn-ghost" id="backToListBtn" type="button">← All dashboards</button>'+
           '<span class="status-msg" id="dashRunStatus"></span>'+
         '</div>'+
       '</div>'+
     '</div>'+
-    '<div id="pivotWrap" style="margin-top:20px;"></div>';
+    '<div id="pivotWrap" style="margin-top:12px;"></div>';
   wireDatePresets(dashRoot(), 'dashFrom', 'dashTo');
   wireDayHoursPresets(dashRoot(), 'dashDay');
   document.getElementById('backToListBtn').addEventListener('click', showDashboardList);
@@ -1738,7 +2391,7 @@ async function runDashboard(dashboard){
     });
     if(!res.ok){
       const err = await res.json().catch(function(){ return {}; });
-      throw new Error(err.detail || ('HTTP '+res.status));
+      throw new Error((typeof formatApiDetail === 'function' ? formatApiDetail(err.detail, 'HTTP '+res.status) : (err.detail && (err.detail.message || JSON.stringify(err.detail))) || ('HTTP '+res.status)));
     }
     const result = await res.json();
 
@@ -1777,18 +2430,19 @@ async function runDashboard(dashboard){
           }
         });
       }catch(e){}
-      pivotWrap.innerHTML = computeInsightStrip(dashboard, result) +
-        (prevResult ? computeCompareStrip(dashboard, result, prevResult) : '') +
-        '<div class="table-tools">'+
-          '<input type="search" id="dashTableSearch" placeholder="Filter rows…">'+
-          '<span class="table-tools-spacer"></span>'+
-          '<label class="table-tools-refresh"><span>Refresh</span> '+
-            '<select id="dashRefreshSel"><option value="0">Off</option><option value="30">30s</option><option value="60">1m</option><option value="300">5m</option></select></label>'+
-          '<span class="table-tools-group">'+
-            '<button type="button" class="chip-btn" id="dashExportBtn">Export CSV</button>'+
-            '<button type="button" class="chip-btn" id="dashExportPdfBtn">Export PDF</button>'+
-          '</span>'+
-          '<button type="button" class="chip-btn" id="dashShareBtn">Copy link</button>'+
+      pivotWrap.innerHTML =
+        '<div class="metrics-results-toolbar">'+
+          computeInsightStrip(dashboard, result) +
+          '<div class="table-tools metrics-tools">'+
+            '<input type="search" id="dashTableSearch" placeholder="Filter rows…">'+
+            '<label class="table-tools-refresh"><span>Auto</span> '+
+              '<select id="dashRefreshSel"><option value="0">Off</option><option value="30">30s</option><option value="60">1m</option><option value="300">5m</option></select></label>'+
+            '<span class="table-tools-group">'+
+              '<button type="button" class="btn-export" id="dashExportBtn">Export CSV</button>'+
+              '<button type="button" class="btn-export" id="dashExportPdfBtn">Export PDF</button>'+
+            '</span>'+
+            '<button type="button" class="chip-btn" id="dashShareBtn">Copy link</button>'+
+          '</div>'+
         '</div>'+
         renderPivot(dashboard, result, prevResult) +
         (audit ? '<div class="audit-box">'+audit+'</div>' : '') +
@@ -1798,6 +2452,8 @@ async function runDashboard(dashboard){
       wireTableSearch(document.getElementById('dashTableSearch'), tbl);
       wirePivotStickyHeaders(pivotWrap);
       wirePivotDrilldown(pivotWrap, dateFrom, dateTo, hours);
+      wireInsightHealthFilter(pivotWrap);
+      wireHostDetailLinks(pivotWrap, dateFrom, dateTo, hours);
       const exportMeta = {
         title: dashboard.name || 'Dashboard',
         dateFrom: dateFrom,
@@ -1806,9 +2462,12 @@ async function runDashboard(dashboard){
         day_time_to: hours.day_time_to,
         comparePrev: comparePrev,
       };
-      document.getElementById('dashExportBtn').addEventListener('click', function(){ exportVisibleTable(pivotWrap, 'dashboard.csv', exportMeta); });
+      const dashBase = (typeof sanitizeExportFilename === 'function'
+        ? sanitizeExportFilename(exportMeta.title, 'dashboard')
+        : 'dashboard');
+      document.getElementById('dashExportBtn').addEventListener('click', function(){ exportVisibleTable(pivotWrap, dashBase + '.csv', exportMeta); });
       document.getElementById('dashExportPdfBtn').addEventListener('click', function(){
-        exportVisibleTablePdf(pivotWrap, 'dashboard.pdf', exportMeta);
+        exportVisibleTablePdf(pivotWrap, dashBase + '.pdf', exportMeta);
       });
       document.getElementById('dashShareBtn').addEventListener('click', function(){
         setShareLink({ tab: 'metrics', dash: dashboard.id, pdash: '' });
@@ -1853,22 +2512,201 @@ function metricBarHtml(value, col){
   return '<div class="metric-bar" title="'+value+'"><div class="metric-bar-fill '+cls+'" style="width:'+pct.toFixed(1)+'%"></div></div>';
 }
 
+
+/** Classify a pivot row for insight filters: critical | warning | healthy | offline (shown as "no data") */
+function pivotRowHealth(row, columns){
+  let hasBad = false, hasWarn = false, hasGood = false, hasData = false;
+  (columns || []).forEach(function(col){
+    const cell = row.cells && row.cells[col.id];
+    const primaryAgg = (col.aggregations || [])[0];
+    if(!cell || primaryAgg == null) return;
+    const v = cell.values ? cell.values[primaryAgg] : null;
+    if(typeof v !== 'number') return;
+    hasData = true;
+    const cls = metricClass(v, col);
+    if(cls === 'metric-bad') hasBad = true;
+    else if(cls === 'metric-warn') hasWarn = true;
+    else if(cls === 'metric-good') hasGood = true;
+  });
+  if(!hasData) return 'offline';
+  if(hasBad) return 'critical';
+  if(hasWarn) return 'warning';
+  return 'healthy';
+}
+
+
+/** Quick view: multiplier + unit inputs under each metric group header. */
+function wireQuickColControls(container){
+  if(!container) return;
+  const last = dashState.quickLast;
+  if(!last || !last.columns) return;
+  container.querySelectorAll('.qv-col-controls').forEach(function(wrap){
+    const colId = wrap.getAttribute('data-col-id');
+    const col = last.columns.find(function(c){ return c.id === colId; });
+    if(!col) return;
+    const multEl = wrap.querySelector('.qv-col-mult');
+    const unitEl = wrap.querySelector('.qv-col-unit');
+    const modeTog = wrap.querySelector('.qv-col-mode-tog');
+    const threshEl = wrap.querySelector('.qv-col-thresh');
+    function currentMode(){
+      const active = modeTog && modeTog.querySelector('.qv-mode-btn.active');
+      return (active && active.getAttribute('data-mode')) || 'high_bad';
+    }
+    function apply(){
+      if(multEl){
+        const m = parseFloat(multEl.value);
+        col.multiplier = (isFinite(m) && m !== 0) ? m : 1;
+      }
+      if(unitEl) col.unit = unitEl.value || '';
+      if(!col.thresholds) col.thresholds = { mode: 'off', yellow: 75, red: 90 };
+      const mode = currentMode();
+      if(threshEl){
+        const t = parseFloat(threshEl.value);
+        if(threshEl.value === '' || !isFinite(t)){
+          col.thresholds.mode = 'off';
+          col.thresholds._prefMode = mode;
+        } else {
+          // Single critical threshold T; warn band is ±10%.
+          // high_bad: yellow = T*0.9, red = T
+          // high_good: red = T, yellow = T*1.1
+          col.thresholds.mode = mode;
+          col.thresholds._prefMode = mode;
+          col.thresholds.red = t;
+          col.thresholds.yellow = (mode === 'high_good') ? (t * 1.1) : (t * 0.9);
+        }
+      }
+      // Re-render pivot body + headers from cached result
+      const pivotParent = container.querySelector('.pivot-wrap');
+      if(!pivotParent) return;
+      const html = renderPivot({ name: 'Quick view', columns: last.columns }, last.data, last.prevResult);
+      // Replace only the pivot-wrap (and legend that follows)
+      const tmp = document.createElement('div');
+      tmp.innerHTML = html;
+      const next = pivotParent.nextElementSibling;
+      if(next && next.classList && next.classList.contains('metrics-legend')) next.remove();
+      pivotParent.replaceWith(tmp.firstElementChild);
+      // legend if present
+      if(tmp.children.length > 1){
+        const newPivot = container.querySelector('.pivot-wrap');
+        if(newPivot && tmp.children[1]) newPivot.after(tmp.children[1]);
+      }
+      // re-wire controls + table features
+      wireQuickColControls(container);
+      const tbl = container.querySelector('table.pivot');
+      if(typeof makeTableSortable === 'function') makeTableSortable(tbl);
+      if(typeof wireTableSearch === 'function'){
+        const search = container.querySelector('#dqTableSearch') || container.querySelector('input[type=search]');
+        if(search) wireTableSearch(search, tbl);
+      }
+      if(typeof wirePivotStickyHeaders === 'function') wirePivotStickyHeaders(container);
+      if(last.dateFrom != null && typeof wirePivotDrilldown === 'function'){
+        wirePivotDrilldown(container, last.dateFrom, last.dateTo, last.hours);
+      }
+      if(typeof wireHostDetailLinks === 'function'){
+        dashState.current = { name: 'Quick view', columns: last.columns };
+        wireHostDetailLinks(container, last.dateFrom, last.dateTo, last.hours);
+      }
+      // Refresh health insight strip (critical / healthy / no data) after threshold change
+      const strip = container.querySelector('.insight-strip-filter');
+      if(strip && typeof computeInsightStrip === 'function'){
+        const fresh = computeInsightStrip({ columns: last.columns }, last.data);
+        if(fresh){
+          const tmpS = document.createElement('div');
+          tmpS.innerHTML = fresh;
+          strip.replaceWith(tmpS.firstElementChild);
+        } else {
+          strip.remove();
+        }
+        if(typeof wireInsightHealthFilter === 'function') wireInsightHealthFilter(container);
+      }
+    }
+    if(multEl){
+      multEl.addEventListener('change', apply);
+      multEl.addEventListener('blur', apply);
+      multEl.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); apply(); multEl.blur(); } });
+    }
+    if(unitEl){
+      unitEl.addEventListener('change', apply);
+      unitEl.addEventListener('blur', apply);
+      unitEl.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); apply(); unitEl.blur(); } });
+    }
+    if(modeTog){
+      modeTog.querySelectorAll('.qv-mode-btn').forEach(function(btn){
+        btn.addEventListener('click', function(e){
+          e.preventDefault();
+          e.stopPropagation();
+          modeTog.querySelectorAll('.qv-mode-btn').forEach(function(b){ b.classList.remove('active'); });
+          btn.classList.add('active');
+          // Remember preferred mode even when thresh is empty
+          if(!col.thresholds) col.thresholds = { mode: 'off', yellow: 75, red: 90 };
+          if(col.thresholds.mode === 'off'){
+            col.thresholds._prefMode = btn.getAttribute('data-mode');
+          }
+          apply();
+        });
+      });
+    }
+    if(threshEl){
+      threshEl.addEventListener('change', apply);
+      threshEl.addEventListener('blur', apply);
+      threshEl.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); apply(); threshEl.blur(); } });
+    }
+    // stop sort click when interacting with inputs
+    wrap.addEventListener('click', function(e){ e.stopPropagation(); });
+    wrap.addEventListener('mousedown', function(e){ e.stopPropagation(); });
+  });
+}
+
 function renderPivot(dashboard, result, prevResult){
   const columns = dashboard.columns || [];
   const prevByHost = {};
   if(prevResult && prevResult.rows){
     prevResult.rows.forEach(function(r){ prevByHost[String(r.hostid)] = r.cells; });
+  } else {
+    try{ window._zrCompareHostStatus = {}; }catch(e){}
   }
   // data-sort-col maps header cells to tbody column index (Host=0, then each aggregation leaf)
   let sortCol = 1;
-  const headerRow1 = ['<th rowspan="2" data-sort-col="0" class="sortable">Host</th>'].concat(
+  const isQuick = (dashboard && dashboard.name === 'Quick view');
+  const headerRow1 = ['<th rowspan="2" data-sort-col="0" class="sortable host-head">Host</th>'].concat(
     columns.map(function(c){
-      return '<th colspan="'+(c.aggregations||[]).length+'" class="sort-group">'+escHtml(c.label)+'</th>';
+      const controls = isQuick
+        ? (function(){
+            const th = c.thresholds || {};
+            const mode = (th.mode && th.mode !== 'off')
+              ? th.mode
+              : (th._prefMode || 'high_bad');
+            const threshVal = (th.mode && th.mode !== 'off' && th.red != null) ? th.red : '';
+            return '<div class="qv-col-controls" data-col-id="'+escHtml(c.id)+'">'+
+             '<label class="qv-col-ctrl" title="Multiply all values in this column">'+
+               '<span class="qv-col-ctrl-lbl">Mult</span>'+
+               '<input type="number" class="qv-col-mult" step="any" min="0" value="'+(c.multiplier != null ? c.multiplier : 1)+'">'+
+             '</label>'+
+             '<label class="qv-col-ctrl" title="Unit shown after each value">'+
+               '<span class="qv-col-ctrl-lbl">Unit</span>'+
+               '<input type="text" class="qv-col-unit" placeholder="%, ms" value="'+escHtml(c.unit || '')+'">'+
+             '</label>'+
+             '<div class="qv-col-ctrl" title="high_bad: higher is worse · high_good: higher is better">'+
+               '<span class="qv-col-ctrl-lbl">Mode</span>'+
+               '<div class="qv-col-mode-tog" role="group" aria-label="Threshold mode">'+
+                 '<button type="button" class="qv-mode-btn'+(mode==='high_bad'?' active':'')+'" data-mode="high_bad" title="Higher is worse">bad↑</button>'+
+                 '<button type="button" class="qv-mode-btn'+(mode==='high_good'?' active':'')+'" data-mode="high_good" title="Higher is better">good↑</button>'+
+               '</div>'+
+             '</div>'+
+             '<label class="qv-col-ctrl" title="Critical threshold. Warn is auto ±10%. Leave empty to disable.">'+
+               '<span class="qv-col-ctrl-lbl">Thresh</span>'+
+               '<input type="number" class="qv-col-thresh" step="any" placeholder="—" value="'+threshVal+'">'+
+             '</label>'+
+           '</div>';
+          })()
+        : '';
+      return '<th colspan="'+(c.aggregations||[]).length+'" class="sort-group metric-group'+(isQuick?' has-qv-controls':'')+'">'+
+        '<div class="metric-group-label">'+escHtml(c.label)+'</div>'+controls+'</th>';
     })
   ).join('');
   const headerRow2 = columns.reduce(function(acc,c){
     return acc.concat((c.aggregations||[]).map(function(a){
-      const html = '<th data-sort-col="'+sortCol+'" class="sortable">'+escHtml(a)+'</th>';
+      const html = '<th data-sort-col="'+sortCol+'" class="sortable metric-sub">'+escHtml(a)+'</th>';
       sortCol++;
       return html;
     }));
@@ -1880,20 +2718,28 @@ function renderPivot(dashboard, result, prevResult){
       const disp = col.display || 'number';
       const tds = (col.aggregations||[]).map(function(agg, aIdx){
         if(!cell || cell.values[agg] === null || cell.values[agg] === undefined){
-          return '<td class="metric-empty">—</td>';
+          return '<td class="metric-empty" data-export-text="—"><span class="badge-nodata" title="No values in this period">No data</span></td>';
         }
         const v = cell.values[agg];
-        const num = typeof v === 'number' ? v : null;
-        const display = num != null ? v.toFixed(col.decimals != null ? col.decimals : 2) : v;
-        const unit = cell.units || col.unit || '';
-        const cls = metricClass(num, col);
+        // Saved dashboards: backend already applied col.multiplier.
+        // Quick view (col.raw): API uses mult=1; apply col.multiplier here only.
+        const mult = (Number(col.multiplier) > 0 && isFinite(Number(col.multiplier))) ? Number(col.multiplier) : 1;
+        const applyClientMult = !!col.raw;
+        const num = typeof v === 'number' ? (applyClientMult ? (v * mult) : v) : null;
+        const display = num != null ? num.toFixed(col.decimals != null ? col.decimals : 2) : v;
+        // raw: no auto Zabbix units; still show user-set col.unit
+        const unit = col.raw ? (col.unit || '') : (cell.units || col.unit || '');
+        const thOff = !col.thresholds || !col.thresholds.mode || col.thresholds.mode === 'off';
+        const cls = (col.raw && thOff) ? 'metric-raw' : metricClass(num, col);
         let deltaHtml = '';
+        let cellDelta = null;
         let prevHtml = '';
         // Previous-period comparison for every aggregation (avg, min, max, last)
         if(num != null && prevByHost[String(row.hostid)]){
           const prevCell = prevByHost[String(row.hostid)][col.id];
           if(prevCell && typeof prevCell.values[agg] === 'number'){
-            const pv = prevCell.values[agg];
+            const pvRaw = prevCell.values[agg];
+            const pv = applyClientMult ? (pvRaw * mult) : pvRaw;
             // high_good / good_high: higher is better → green on up
             // high_bad / bad_high / default: lower is better → green on down
             const thMode = col.thresholds && col.thresholds.mode;
@@ -1901,12 +2747,13 @@ function renderPivot(dashboard, result, prevResult){
               ? thMode
               : (col.color_mode === 'good_high' ? 'high_good' : 'high_bad');
             const goodWhenDown = mode === 'high_bad' || mode === 'bad_high';
-            deltaHtml = deltaBadgeHtml(v, pv, goodWhenDown);
+            // Compare in the same space as displayed numbers
+            deltaHtml = deltaBadgeHtml(num, pv, goodWhenDown);
+            cellDelta = (typeof num === 'number' && typeof pv === 'number') ? (num - pv) : null;
             prevHtml = '<div class="metric-prev">prev '+pv.toFixed(col.decimals != null ? col.decimals : 2)+(unit?' '+unit:'')+'</div>';
           }
         }
         const clickable = itemid ? ' pivot-clickable' : '';
-        const mult = col.multiplier != null ? col.multiplier : 1;
         // Graphs only on avg — min / max / last are always plain numbers
         const isAvg = agg === 'avg';
         const showGraph = isAvg
@@ -1923,78 +2770,486 @@ function renderPivot(dashboard, result, prevResult){
         // data-export-text → PDF (formatted value + unit)
         // data-export-tone → PDF threshold colour (good|warn|bad)
         const exportNum = num != null ? num.toFixed(2) : '';
-        const exportText = num != null ? (exportNum + (unit ? ' ' + unit : '')) : String(v);
+        // Consistent unit spacing: "100.00%" (no space), otherwise "2.27 ms"
+        const exportText = num != null
+          ? (exportNum + (unit ? (unit === '%' ? '%' : ' ' + unit) : ''))
+          : String(v);
         const exportTone = cls === 'metric-bad' ? 'bad' : (cls === 'metric-warn' ? 'warn' : (cls === 'metric-good' ? 'good' : ''));
         const exportAttrs = (exportNum !== '' ? ' data-export-num="'+exportNum+'"' : '') +
           ' data-export-text="'+escHtml(exportText)+'"' +
-          (exportTone ? ' data-export-tone="'+exportTone+'"' : '');
+          (exportTone ? ' data-export-tone="'+exportTone+'"' : '') +
+          (cellDelta != null && isFinite(cellDelta) ? ' data-delta="'+cellDelta.toFixed(4)+'"' : '');
         const dataAttrs = (itemid
           ? ' data-itemid="'+itemid+'" data-host="'+escHtml(row.host)+'" data-col="'+escHtml(col.label)+'" data-unit="'+escHtml(unit)+'"'+
             ' data-mult="'+mult+'" data-th-mode="'+thMode+'" data-th-yellow="'+thYellow+'" data-th-red="'+thRed+'"'
           : '') + exportAttrs;
+        // Fixed-size spark placeholder (identical box in every graph cell)
         const spark = showGraph
           ? '<div class="metric-spark" data-itemid="'+itemid+'" data-mult="'+mult+'"'+
+            ' data-unit="'+escHtml(unit)+'"'+
             ' data-th-mode="'+thMode+'"'+
             ' data-th-yellow="'+thYellow+'"'+
             ' data-th-red="'+thRed+'"'+
             ' title="Period trend (avg)"></div>'
           : '';
+        // Unified cell stack: value on top, fixed graphic underneath
+        const valueHtml = '<div class="metric-num">'+display+(unit?' '+unit:'')+deltaHtml+'</div>';
         let inner = '';
         if(!isAvg){
-          // min / max / last — always number only
-          inner = display+(unit?' '+unit:'')+deltaHtml+prevHtml;
-        } else if(disp === 'bar' && num != null){
-          inner = metricBarHtml(num, col) + deltaHtml + prevHtml;
-        } else if(disp === 'number_bar' && num != null){
-          inner = '<div class="metric-num">'+display+(unit?' '+unit:'')+deltaHtml+'</div>'+metricBarHtml(num, col)+prevHtml;
-        } else if(disp === 'graph' && showGraph){
-          inner = '<div class="metric-with-spark metric-spark-only">'+spark+deltaHtml+'</div>'+prevHtml;
-        } else if(disp === 'number_graph' && showGraph){
+          // min / max / last — number only (right-aligned)
+          inner = '<div class="metric-num">'+display+(unit?' '+unit:'')+deltaHtml+'</div>'+prevHtml;
+        } else if(showGraph){
+          // graph / number_graph → same structure always
+          inner = '<div class="metric-with-spark">'+valueHtml+spark+'</div>'+prevHtml;
+        } else if((disp === 'bar' || disp === 'number_bar') && num != null){
+          // bar modes use the same vertical stack + fixed-width bar slot
           inner = '<div class="metric-with-spark">'+
-            '<div class="metric-num">'+display+(unit?' '+unit:'')+deltaHtml+'</div>'+
-            spark+
+            valueHtml+
+            '<div class="metric-spark metric-spark-bar">'+metricBarHtml(num, col)+'</div>'+
             '</div>'+prevHtml;
         } else {
-          inner = display+(unit?' '+unit:'')+deltaHtml+prevHtml;
+          inner = valueHtml+prevHtml;
         }
         return '<td class="'+cls+clickable+'"'+dataAttrs+'>'+inner+'</td>';
       });
       return acc.concat(tds);
     }, []).join('');
-    return '<tr><td class="host-cell">'+escHtml(row.host)+'</td>'+cells+'</tr>';
+    const health = pivotRowHealth(row, columns);
+    const hostLabel = row.host || row.name || String(row.hostid || '');
+    const hostLink = '<button type="button" class="host-link" data-hostid="'+escHtml(String(row.hostid||''))+'" data-host="'+escHtml(hostLabel)+'" title="Host details">'+escHtml(hostLabel)+'</button>';
+    var cmp = '';
+    try{
+      if(window._zrCompareHostStatus && row.hostid != null)
+        cmp = window._zrCompareHostStatus[String(row.hostid)] || '';
+    }catch(e){ cmp = ''; }
+    return '<tr data-health="'+health+'" data-compare="'+(cmp||'')+'" data-hostid="'+escHtml(String(row.hostid||''))+'"><td class="host-cell">'+hostLink+'</td>'+cells+'</tr>';
   }).join('');
-  return '<div class="pivot-wrap"><table class="pivot"><thead><tr>'+headerRow1+'</tr><tr>'+headerRow2+'</tr></thead><tbody>'+bodyRows+'</tbody></table></div>';
+  return '<div class="pivot-wrap"><table class="pivot"><thead><tr>'+headerRow1+'</tr><tr>'+headerRow2+'</tr></thead><tbody>'+bodyRows+'</tbody></table></div>'+
+    '<div class="metrics-legend">'+
+      '<span class="leg ok"><i></i> Normal</span>'+
+      '<span class="leg warn"><i></i> Approaching threshold</span>'+
+      '<span class="leg bad"><i></i> Over threshold</span>'+
+    '</div>';
 }
 
 function computeInsightStrip(dashboard, result){
   const columns = dashboard.columns || [];
-  const hasThresholds = columns.some(function(c){
-    return (c.thresholds && c.thresholds.mode && c.thresholds.mode !== 'off') || (c.color_mode && c.color_mode !== 'none');
+  let bad = 0, warn = 0, ok = 0, offline = 0;
+  (result.rows || []).forEach(function(row){
+    const h = pivotRowHealth(row, columns);
+    if(h === 'critical') bad++;
+    else if(h === 'warning') warn++;
+    else if(h === 'offline') offline++;
+    else ok++;
   });
-  if(!hasThresholds) return '';
-  let bad = 0, warn = 0, ok = 0;
-  (result.rows||[]).forEach(function(row){
-    columns.forEach(function(col){
-      const cell = row.cells[col.id];
-      if(!cell) return;
-      const primaryAgg = (col.aggregations||[])[0];
-      if(!primaryAgg) return;
-      const v = cell.values[primaryAgg];
-      if(typeof v !== 'number') return;
-      const cls = metricClass(v, col);
-      if(cls === 'metric-bad') bad++;
-      else if(cls === 'metric-warn') warn++;
-      else if(cls === 'metric-good') ok++;
-    });
-  });
-  if(!bad && !warn && !ok) return '';
-  let html = '<div class="insight-strip">';
-  if(bad) html += '<span class="insight-chip bad"><b>'+bad+'</b> critical</span>';
-  if(warn) html += '<span class="insight-chip warn"><b>'+warn+'</b> warning</span>';
-  html += '<span class="insight-chip ok"><b>'+ok+'</b> healthy</span>';
+  if(!bad && !warn && !ok && !offline) return '';
+  let html = '<div class="insight-strip insight-strip-filter" title="Click a badge to filter hosts">';
+  if(bad) html += '<button type="button" class="insight-chip bad" data-health-filter="critical" aria-pressed="false"><b>'+bad+'</b> critical</button>';
+  if(warn) html += '<button type="button" class="insight-chip warn" data-health-filter="warning" aria-pressed="false"><b>'+warn+'</b> warning</button>';
+  if(ok) html += '<button type="button" class="insight-chip ok" data-health-filter="healthy" aria-pressed="false"><b>'+ok+'</b> healthy</button>';
+  if(offline) html += '<button type="button" class="insight-chip muted" data-health-filter="offline" aria-pressed="false"><b>'+offline+'</b> no data</button>';
   html += '</div>';
   return html;
 }
+
+/** Toggle table rows by health / compare badges. */
+function wireInsightHealthFilter(container){
+  if(!container) return;
+  const table = container.querySelector('table.pivot');
+  if(!table) return;
+  // Health strip + compare strip may both use insight-strip-filter
+  const strips = container.querySelectorAll('.insight-strip-filter, .compare-strip');
+  if(!strips.length) return;
+
+  function apply(){
+    const healthActive = [];
+    const compareActive = [];
+    container.querySelectorAll('[data-health-filter].active').forEach(function(c){
+      healthActive.push(c.getAttribute('data-health-filter'));
+    });
+    container.querySelectorAll('[data-compare-filter].active').forEach(function(c){
+      compareActive.push(c.getAttribute('data-compare-filter'));
+    });
+    table.querySelectorAll('tbody tr').forEach(function(tr){
+      const h = tr.getAttribute('data-health') || '';
+      const cmp = tr.getAttribute('data-compare') || '';
+      const healthOk = !healthActive.length || healthActive.indexOf(h) >= 0;
+      const compareOk = !compareActive.length || compareActive.indexOf(cmp) >= 0;
+      tr.style.display = (healthOk && compareOk) ? '' : 'none';
+    });
+  }
+
+  container.querySelectorAll('[data-health-filter], [data-compare-filter]').forEach(function(chip){
+    if(chip.tagName !== 'BUTTON'){
+      // Upgrade spans to buttons for a11y if needed — already buttons in new markup
+      chip.style.cursor = 'pointer';
+    }
+    chip.addEventListener('click', function(){
+      const on = !chip.classList.contains('active');
+      // Exclusive within same filter group (health vs compare)
+      const group = chip.hasAttribute('data-health-filter') ? 'data-health-filter' : 'data-compare-filter';
+      container.querySelectorAll('['+group+']').forEach(function(c){
+        if(c === chip) return;
+        // allow multi-select within group — only toggle this chip
+      });
+      chip.classList.toggle('active', on);
+      chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+      apply();
+    });
+  });
+}
+
+/** Collect dashboard columns mapped to this host for host-detail charts. */
+function hostDetailMetricsFor(hostid){
+  const dash = dashState.current;
+  if(!dash || !dash.columns) return [];
+  const hid = String(hostid);
+  const out = [];
+  (dash.columns || []).forEach(function(col){
+    const itemid = col.host_items && (col.host_items[hid] || col.host_items[hostid]);
+    if(!itemid) return;
+    const th = col.thresholds || {};
+    const thMode = (th.mode && th.mode !== 'off')
+      ? th.mode
+      : (col.color_mode === 'good_high' ? 'high_good' : (col.color_mode === 'bad_high' ? 'high_bad' : 'off'));
+    out.push({
+      itemid: parseInt(itemid, 10),
+      label: col.label || col.name || ('Metric '+itemid),
+      unit: col.unit || '',
+      multiplier: (col.multiplier != null && !isNaN(col.multiplier)) ? Number(col.multiplier) : 1,
+      thresholds: {
+        mode: thMode,
+        yellow: th.yellow != null ? th.yellow : 75,
+        red: th.red != null ? th.red : 90,
+      },
+    });
+  });
+  return out;
+}
+
+/** Open host detail drawer (problems + metric snapshot) when a hostname is clicked. */
+function wireHostDetailLinks(container, dateFrom, dateTo, dayHours){
+  if(!container) return;
+  container.querySelectorAll('button.host-link').forEach(function(btn){
+    btn.addEventListener('click', function(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+      const hostid = btn.getAttribute('data-hostid');
+      openHostDetailDrawer({
+        hostid: hostid,
+        host: btn.getAttribute('data-host') || '',
+        dateFrom: dateFrom,
+        dateTo: dateTo,
+        dayHours: dayHours || {},
+        metrics: hostDetailMetricsFor(hostid),
+      });
+    });
+  });
+}
+
+async function openHostDetailDrawer(opts){
+  const hostid = parseInt(opts.hostid, 10);
+  const hostName = opts.host || ('Host '+opts.hostid);
+  const metrics = opts.metrics || [];
+  const dayHours = opts.dayHours || {};
+
+  // Clear any previous single-chart resize handler from cell drill-down
+  if(window._ddChartResizeHandler){
+    window.removeEventListener('resize', window._ddChartResizeHandler);
+    window._ddChartResizeHandler = null;
+  }
+  if(window._hostDetailKeyHandler){
+    document.removeEventListener('keydown', window._hostDetailKeyHandler);
+    window._hostDetailKeyHandler = null;
+  }
+
+  const chartsHtml = metrics.length
+    ? '<div class="host-detail-section"><h4>Metrics (avg)</h4>'+
+        '<p class="host-detail-sub host-detail-chart-hint">Drag any chart to zoom all · <kbd>0</kbd> resets all charts</p>'+
+        '<div id="hostDetailCharts" class="host-detail-charts">'+
+          metrics.map(function(m, i){
+            return '<div class="host-metric-card" data-metric-idx="'+i+'">'+
+              '<div class="host-metric-head">'+
+                '<span class="host-metric-label">'+escHtml(m.label)+'</span>'+
+                '<span class="host-metric-stats" id="hdStats'+i+'">Loading…</span>'+
+              '</div>'+
+              '<div class="chart-wrap chart-wrap-hd">'+
+                '<canvas class="chart" id="hdChart'+i+'" height="160"></canvas>'+
+                '<div class="tooltip" id="hdTooltip'+i+'"></div>'+
+              '</div>'+
+              '<div class="hd-zoom-bar">'+
+                '<span class="hd-zoom-range" id="hdZoomRange'+i+'" hidden></span>'+
+                '<button type="button" class="btn btn-ghost hd-reset-zoom" id="hdReset'+i+'" style="display:none;">Reset zoom</button>'+
+              '</div>'+
+            '</div>';
+          }).join('')+
+        '</div></div>'
+    : '<div class="host-detail-section"><h4>Metrics</h4><div class="host-detail-empty">No mapped metrics for this host on the current dashboard.</div></div>';
+
+  openDrawer(hostName,
+    '<div class="host-detail">'+
+      '<div class="host-detail-toolbar">'+
+        '<p class="host-detail-sub">Active problems and average graphs for dashboard metrics.</p>'+
+        '<button type="button" class="btn btn-ghost" id="hostDetailMaxBtn" title="Expand panel to full page width">Maximize</button>'+
+      '</div>'+
+      chartsHtml+
+      '<div class="host-detail-section"><h4>Active problems</h4><div id="hostDetailProblems"><span class="stat">Loading…</span></div></div>'+
+    '</div>');
+
+  // Problems (parallel with charts)
+  (async function loadProblems(){
+    const box = document.getElementById('hostDetailProblems');
+    try{
+      const res = await apiFetch('/api/problems', {
+        method: 'POST',
+        timeoutMs: 20000,
+        body: JSON.stringify({ hostids: [hostid], min_severity: 0 }),
+      });
+      if(!res.ok){
+        const err = await res.json().catch(function(){ return {}; });
+        throw new Error((typeof formatApiDetail === 'function' ? formatApiDetail(err.detail, 'HTTP '+res.status) : (err.detail && (err.detail.message || JSON.stringify(err.detail))) || ('HTTP '+res.status)));
+      }
+      const data = await res.json();
+      const problems = data.problems || data || [];
+      if(!box) return;
+      if(!problems.length){
+        box.innerHTML = '<div class="host-detail-empty">No active problems on this host.</div>';
+        return;
+      }
+      box.innerHTML = '<ul class="host-detail-problems">'+problems.slice(0, 40).map(function(p){
+        const sev = p.severity_label || ('Sev '+p.severity);
+        const name = p.problem_name || p.name || p.description || 'Problem';
+        const since = p.clock ? fmtTime(p.clock) : '';
+        return '<li class="host-detail-prob sev-'+p.severity+'">'+
+          '<span class="sev-pill">'+escHtml(String(sev))+'</span> '+
+          '<span class="prob-name">'+escHtml(name)+'</span>'+
+          (since ? '<span class="prob-since">'+escHtml(since)+'</span>' : '')+
+        '</li>';
+      }).join('')+
+      (problems.length > 40 ? '<li class="host-detail-empty">…and '+(problems.length-40)+' more</li>' : '')+
+      '</ul>';
+    }catch(err){
+      if(box) box.innerHTML = '<div class="host-detail-empty">Could not load problems: '+escHtml(String(err.message||err))+'</div>';
+    }
+  })();
+
+  // Metric charts with threshold coloring + linked drag-zoom (one zoom → all graphs)
+  if(!metrics.length) return;
+  const controllers = [];
+  // Shared zoom as ratios of each series length so charts with different point counts stay aligned
+  let sharedFromRatio = 0;
+  let sharedToRatio = 1;
+
+  function applySharedZoomToAll(){
+    controllers.forEach(function(c){
+      try{ c.applyRatio(sharedFromRatio, sharedToRatio); }catch(_){}
+    });
+  }
+  function resetAllZoom(){
+    sharedFromRatio = 0;
+    sharedToRatio = 1;
+    applySharedZoomToAll();
+  }
+
+  async function loadMetricChart(m, idx){
+    const statsEl = document.getElementById('hdStats'+idx);
+    const canvas = document.getElementById('hdChart'+idx);
+    const tip = document.getElementById('hdTooltip'+idx);
+    const rangeEl = document.getElementById('hdZoomRange'+idx);
+    const resetBtn = document.getElementById('hdReset'+idx);
+    if(!canvas || !tip) return;
+
+    try{
+      const res = await apiFetch('/api/items/series', {
+        method: 'POST',
+        timeoutMs: 30000,
+        body: JSON.stringify({
+          itemids: [m.itemid],
+          date_from: opts.dateFrom,
+          date_to: opts.dateTo,
+          resolution: 'auto',
+          day_time_from: dayHours.day_time_from || null,
+          day_time_to: dayHours.day_time_to || null,
+          tz_offset_min: apiTzOffsetMin(),
+        }),
+      });
+      if(!res.ok){
+        const err = await res.json().catch(function(){ return {}; });
+        throw new Error((typeof formatApiDetail === 'function' ? formatApiDetail(err.detail, 'HTTP '+res.status) : (err.detail && (err.detail.message || JSON.stringify(err.detail))) || ('HTTP '+res.status)));
+      }
+      const data = await res.json();
+      const s = (data.series || [])[0];
+      if(!s || !s.points || !s.points.length){
+        if(statsEl) statsEl.textContent = 'No data';
+        return;
+      }
+      const mult = m.multiplier || 1;
+      const unit = m.unit || s.units || '';
+      const labels = s.points.map(function(p){ return fmtTimeShort(p.clock); });
+      const values = s.points.map(function(p){
+        const v = typeof p.value === 'number' ? p.value : p.avg;
+        return typeof v === 'number' ? v * mult : null;
+      });
+      const nFull = labels.length;
+      let zoomFrom = 0;
+      let zoomTo = nFull - 1;
+
+      function ratiosToIndices(fromR, toR){
+        if(nFull <= 1) return { from: 0, to: 0 };
+        let from = Math.round(fromR * (nFull - 1));
+        let to = Math.round(toR * (nFull - 1));
+        from = Math.max(0, Math.min(nFull - 1, from));
+        to = Math.max(0, Math.min(nFull - 1, to));
+        if(to < from){ const t = from; from = to; to = t; }
+        if(to === from && nFull > 1){
+          if(to < nFull - 1) to = from + 1;
+          else from = Math.max(0, to - 1);
+        }
+        return { from: from, to: to };
+      }
+      function isZoomed(){ return zoomFrom > 0 || zoomTo < nFull - 1; }
+      function updateZoomUi(){
+        if(resetBtn) resetBtn.style.display = isZoomed() ? '' : 'none';
+        if(rangeEl){
+          if(isZoomed() && labels[zoomFrom] != null && labels[zoomTo] != null){
+            rangeEl.hidden = false;
+            rangeEl.textContent = labels[zoomFrom]+' → '+labels[zoomTo];
+          } else {
+            rangeEl.hidden = true;
+            rangeEl.textContent = '';
+          }
+        }
+        const vis = values.slice(zoomFrom, zoomTo + 1).filter(function(v){ return typeof v === 'number'; });
+        const vmin = vis.length ? Math.min.apply(null, vis) : null;
+        const vmax = vis.length ? Math.max.apply(null, vis) : null;
+        const vavg = vis.length ? vis.reduce(function(a,b){ return a+b; },0)/vis.length : null;
+        if(statsEl){
+          statsEl.innerHTML =
+            'min '+(vmin!=null?formatValue(vmin,unit):'—')+
+            ' · avg '+(vavg!=null?formatValue(vavg,unit):'—')+
+            ' · max '+(vmax!=null?formatValue(vmax,unit):'—');
+        }
+      }
+      function chartHeight(){
+        const drawer = document.getElementById('detailDrawer');
+        const maximized = drawer && drawer.classList.contains('drawer-maximized');
+        if(!maximized) return 160;
+        const n = Math.max(1, metrics.length);
+        const avail = Math.max(220, ((window.innerHeight || 700) - 200) / Math.min(n, 3));
+        return Math.min(Math.round(avail), 360);
+      }
+      function redraw(){
+        const c = document.getElementById('hdChart'+idx);
+        const t = document.getElementById('hdTooltip'+idx);
+        if(!c || !t) return;
+        drawLineChart(c, t, {
+          labels: labels,
+          datasets: [{ label: m.label, data: values, color: '#3FBF6F' }],
+          showLegend: false,
+          height: chartHeight(),
+          valueFmt: function(v){ return formatValue(v, unit); },
+          thresholds: m.thresholds && m.thresholds.mode !== 'off' ? m.thresholds : null,
+          viewFrom: zoomFrom,
+          viewTo: zoomTo,
+          onZoom: function(absFrom, absTo){
+            if(absTo <= absFrom) return;
+            // Publish shared ratios so every graph zooms to the same relative window
+            if(nFull > 1){
+              sharedFromRatio = absFrom / (nFull - 1);
+              sharedToRatio = absTo / (nFull - 1);
+            } else {
+              sharedFromRatio = 0;
+              sharedToRatio = 1;
+            }
+            applySharedZoomToAll();
+          },
+        });
+      }
+      function applyRatio(fromR, toR){
+        const idxRange = ratiosToIndices(fromR, toR);
+        zoomFrom = idxRange.from;
+        zoomTo = idxRange.to;
+        updateZoomUi();
+        redraw();
+      }
+      function resetZoom(){
+        applyRatio(0, 1);
+      }
+      if(resetBtn){
+        resetBtn.addEventListener('click', function(){
+          resetAllZoom();
+        });
+      }
+      controllers.push({
+        resetZoom: resetZoom,
+        redraw: redraw,
+        applyRatio: applyRatio,
+        canvas: canvas,
+      });
+      // Apply current shared zoom (in case another chart already zoomed)
+      applyRatio(sharedFromRatio, sharedToRatio);
+    }catch(err){
+      if(statsEl) statsEl.textContent = 'Failed: '+(err.message || err);
+    }
+  }
+
+  // Load charts (stagger slightly to avoid thundering herd)
+  metrics.forEach(function(m, i){
+    setTimeout(function(){ loadMetricChart(m, i); }, i * 40);
+  });
+
+  function redrawAllHostCharts(){
+    controllers.forEach(function(c){ try{ if(c.redraw) c.redraw(); }catch(_){} });
+  }
+  function setHostDetailMaximized(on){
+    const drawer = document.getElementById('detailDrawer');
+    const maxBtn = document.getElementById('hostDetailMaxBtn');
+    if(!drawer) return;
+    drawer.classList.toggle('drawer-maximized', !!on);
+    if(maxBtn){
+      maxBtn.textContent = on ? 'Restore' : 'Maximize';
+      maxBtn.title = on ? 'Restore panel size (Esc)' : 'Expand panel to full page width';
+      maxBtn.classList.toggle('is-active', !!on);
+    }
+    setTimeout(redrawAllHostCharts, 240);
+  }
+  const maxBtn = document.getElementById('hostDetailMaxBtn');
+  if(maxBtn){
+    maxBtn.addEventListener('click', function(){
+      const drawer = document.getElementById('detailDrawer');
+      if(!drawer) return;
+      setHostDetailMaximized(!drawer.classList.contains('drawer-maximized'));
+    });
+  }
+  if(window._hostDetailResizeHandler){
+    window.removeEventListener('resize', window._hostDetailResizeHandler);
+  }
+  window._hostDetailResizeHandler = function(){
+    const drawer = document.getElementById('detailDrawer');
+    if(drawer && drawer.classList.contains('show') && drawer.classList.contains('drawer-maximized')){
+      redrawAllHostCharts();
+    }
+  };
+  window.addEventListener('resize', window._hostDetailResizeHandler);
+
+  // Keyboard: 0 resets zoom on ALL charts; Esc restores maximize first
+  window._hostDetailKeyHandler = function(ev){
+    const drawer = document.getElementById('detailDrawer');
+    if(!drawer || !drawer.classList.contains('show')) return;
+    const tag = (ev.target && ev.target.tagName) || '';
+    if(tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if(ev.key === '0' && !ev.ctrlKey && !ev.metaKey && !ev.altKey){
+      resetAllZoom();
+    }
+    if(ev.key === 'Escape' && drawer.classList.contains('drawer-maximized')){
+      ev.preventDefault();
+      ev.stopPropagation();
+      setHostDetailMaximized(false);
+    }
+  };
+  document.addEventListener('keydown', window._hostDetailKeyHandler);
+}
+
 
 /**
  * Summary of vs-previous-period movement (uses same good/bad direction as delta badges).
@@ -2073,26 +3328,36 @@ function computeCompareStrip(dashboard, result, prevResult){
   return html;
 }
 
-/** Measure first thead row so the second sticky header row sits flush under it. */
+/** Measure first thead row so the second sticky header row sits flush under it.
+ *  Also writes top on second-row th cells so sticky works even if CSS var lags. */
 function wirePivotStickyHeaders(container){
   if(!container) return;
   const wrap = container.classList && container.classList.contains('pivot-wrap')
     ? container
     : container.querySelector('.pivot-wrap');
   if(!wrap) return;
-  const first = wrap.querySelector('table.pivot thead tr:first-child');
+  const table = wrap.querySelector('table.pivot') || wrap.querySelector('table.problems-table');
+  if(!table) return;
+  const thead = table.querySelector('thead');
+  const first = thead && thead.querySelector('tr:first-child');
   if(!first) return;
+  const secondCells = thead.querySelectorAll('tr:nth-child(2) th');
   const apply = function(){
     const h = Math.ceil(first.getBoundingClientRect().height);
-    if(h > 0) wrap.style.setProperty('--pivot-head-h', h + 'px');
+    if(h > 0){
+      wrap.style.setProperty('--pivot-head-h', h + 'px');
+      // Inline top so dual-row sticky is reliable across browsers
+      secondCells.forEach(function(th){ th.style.top = h + 'px'; });
+    }
   };
   apply();
-  // Re-measure after fonts/layout settle
-  requestAnimationFrame(apply);
+  // Re-measure after fonts/layout settle (inputs in Quick-view headers can grow row)
+  requestAnimationFrame(function(){ apply(); requestAnimationFrame(apply); });
   if(typeof ResizeObserver !== 'undefined'){
     if(wrap._pivotHeadRO) try{ wrap._pivotHeadRO.disconnect(); }catch(_){}
     wrap._pivotHeadRO = new ResizeObserver(apply);
     wrap._pivotHeadRO.observe(first);
+    wrap._pivotHeadRO.observe(table);
   }
 }
 
@@ -2163,11 +3428,26 @@ async function wirePivotSparklines(container, dateFrom, dateTo, dayHours){
       });
     }catch(e){ console.warn('sparkline series', e); }
   }
+  const SPARK_H = 28;
+  function paintSparkEl(el, values, thOpts){
+    // Width follows the column/cell; measure after layout
+    let w = Math.round(el.clientWidth || el.offsetWidth || 0);
+    if(w < 40){
+      // Cell may not be laid out yet — fall back to parent td
+      const td = el.closest('td');
+      if(td) w = Math.round(td.clientWidth - 24);
+    }
+    if(w < 40) w = 64;
+    if(w > 320) w = 320;
+    el.innerHTML = sparklineSvg(values, w, SPARK_H, thOpts, null);
+  }
+
   Object.keys(byId).forEach(function(idStr){
     const series = seriesByItem[idStr];
     byId[idStr].forEach(function(el){
       if(!series || !(series.points||[]).length){
         el.innerHTML = '';
+        el._sparkValues = null;
         return;
       }
       const mult = parseFloat(el.dataset.mult) || 1;
@@ -2178,16 +3458,52 @@ async function wirePivotSparklines(container, dateFrom, dateTo, dayHours){
         else if(typeof p.value_avg === 'number') v = p.value_avg;
         return v == null ? null : v * mult;
       }).filter(function(v){ return typeof v === 'number' && !isNaN(v); });
-      // Dynamic width: fill remaining space beside the number
-      const only = el.closest('.metric-spark-only');
       const thOpts = {
         mode: el.dataset.thMode || 'off',
         yellow: parseFloat(el.dataset.thYellow),
         red: parseFloat(el.dataset.thRed),
       };
-      el.innerHTML = sparklineSvg(values, only ? 100 : 80, 22, thOpts);
+      // Cache for resize repaints
+      el._sparkValues = values;
+      el._sparkTh = thOpts;
+      paintSparkEl(el, values, thOpts);
     });
   });
+
+  // Re-paint sparklines when column widths change (window resize / maximize)
+  if(container._sparkRO){
+    try{ container._sparkRO.disconnect(); }catch(_){}
+    container._sparkRO = null;
+  }
+  function repaintAllSparks(){
+    container.querySelectorAll('.metric-spark[data-itemid]').forEach(function(el){
+      if(!el._sparkValues || !el._sparkValues.length) return;
+      paintSparkEl(el, el._sparkValues, el._sparkTh || { mode: 'off' });
+    });
+  }
+  // Double-rAF so first paint uses final column widths after table layout
+  requestAnimationFrame(function(){
+    requestAnimationFrame(repaintAllSparks);
+  });
+  if(typeof ResizeObserver !== 'undefined'){
+    let roTimer = null;
+    container._sparkRO = new ResizeObserver(function(){
+      if(roTimer) clearTimeout(roTimer);
+      roTimer = setTimeout(repaintAllSparks, 80);
+    });
+    const wrap = container.querySelector('.pivot-wrap') || container;
+    container._sparkRO.observe(wrap);
+  } else {
+    if(container._sparkResizeHandler){
+      window.removeEventListener('resize', container._sparkResizeHandler);
+    }
+    let t = null;
+    container._sparkResizeHandler = function(){
+      if(t) clearTimeout(t);
+      t = setTimeout(repaintAllSparks, 100);
+    };
+    window.addEventListener('resize', container._sparkResizeHandler);
+  }
 }
 
 

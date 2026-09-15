@@ -87,16 +87,46 @@ def favicon_svg():
     path = FRONTEND_DIR / "favicon.svg"
     if path.is_file():
         return FileResponse(path, media_type="image/svg+xml")
+    # Fall back to PNG icon
+    png = FRONTEND_DIR / "icon.png"
+    if png.is_file():
+        return FileResponse(png, media_type="image/png")
     raise HTTPException(status_code=404, detail="favicon not found")
 
 
 @app.get("/favicon.ico")
 def favicon_ico():
-    # Prefer SVG; browsers that request .ico still get a usable icon response
-    svg = FRONTEND_DIR / "favicon.svg"
-    if svg.is_file():
-        return FileResponse(svg, media_type="image/svg+xml")
+    ico = FRONTEND_DIR / "favicon.ico"
+    if ico.is_file():
+        return FileResponse(ico, media_type="image/x-icon")
+    png = FRONTEND_DIR / "favicon-32.png"
+    if png.is_file():
+        return FileResponse(png, media_type="image/png")
     raise HTTPException(status_code=404, detail="favicon not found")
+
+
+@app.get("/icon.png")
+def icon_png():
+    path = FRONTEND_DIR / "icon.png"
+    if path.is_file():
+        return FileResponse(path, media_type="image/png")
+    raise HTTPException(status_code=404, detail="icon not found")
+
+
+@app.get("/favicon-32.png")
+def favicon_32():
+    path = FRONTEND_DIR / "favicon-32.png"
+    if path.is_file():
+        return FileResponse(path, media_type="image/png")
+    raise HTTPException(status_code=404, detail="favicon not found")
+
+
+@app.get("/apple-touch-icon.png")
+def apple_touch_icon():
+    path = FRONTEND_DIR / "apple-touch-icon.png"
+    if path.is_file():
+        return FileResponse(path, media_type="image/png")
+    raise HTTPException(status_code=404, detail="icon not found")
 
 
 @app.get("/")

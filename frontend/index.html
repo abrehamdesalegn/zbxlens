@@ -4,9 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ZbxLens</title>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="alternate icon" href="/favicon.ico">
-  <link rel="stylesheet" href="/css/app.css?v=5.0.0n">
+  <link rel="icon" href="/icon.png?v=5.1.3" type="image/png" sizes="512x512">
+  <link rel="icon" href="/favicon.svg?v=5.1.3" type="image/svg+xml">
+  <link rel="icon" href="/favicon-32.png?v=5.1.3" type="image/png" sizes="32x32">
+  <link rel="icon" href="/favicon.ico?v=5.1.3" sizes="any">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=5.1.3">
+  <link rel="stylesheet" href="/css/app.css?v=5.1.6col">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -16,32 +19,61 @@
 <header>
   <div class="brand">
     <div class="mark">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 17L9 10L13 14L21 5" stroke="#E8A33D" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 5H15" stroke="#E8A33D" stroke-width="2" stroke-linecap="round"/><path d="M21 5V11" stroke="#E8A33D" stroke-width="2" stroke-linecap="round"/></svg>
+      <img src="/icon.png?v=5.1.3" width="40" height="40" alt="ZbxLens" draggable="false">
     </div>
     <div>
       <div class="eyebrow">Zabbix &middot; Metrics &amp; Problems</div>
       <h1>ZbxLens</h1>
     </div>
   </div>
-  <div class="pulse-wrap">
-    <canvas id="pulse" width="140" height="28"></canvas>
+  <div class="nav-tabs nav-tabs-header" id="navTabs">
+    <button type="button" class="active" data-nav="dashboards">Metrics</button>
+    <button type="button" data-nav="problems">Problems</button>
+  </div>
+  <div class="pulse-wrap" id="pulseWrap" title="DB query latency (live)">
+    <canvas id="pulse" width="120" height="28" aria-label="DB latency sparkline"></canvas>
     <div class="live-dot" id="liveDot"><span class="dot"></span><span id="liveLabel">checking…</span></div>
+  </div>
+  <div class="header-actions" id="uiExtras">
+    <button type="button" class="icon-btn" id="themeBtn" title="Cycle theme (auto / dark / light)" aria-label="Theme">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+    </button>
+    <div class="prefs-wrap">
+      <button type="button" class="chip-btn" id="prefsBtn" title="Display preferences">Display</button>
+      <div class="prefs-popover" id="prefsPopover" role="dialog" aria-label="Display preferences">
+        <div class="prefs-section">
+          <div class="prefs-section-label">Theme</div>
+          <div class="prefs-seg" role="group" aria-label="Theme">
+            <button type="button" class="prefs-seg-btn" data-pref-theme="auto">Auto</button>
+            <button type="button" class="prefs-seg-btn" data-pref-theme="dark">Dark</button>
+            <button type="button" class="prefs-seg-btn" data-pref-theme="light">Light</button>
+          </div>
+          <select id="prefTheme" class="sr-only" aria-hidden="true" tabindex="-1">
+            <option value="auto">Auto</option><option value="dark">Dark</option><option value="light">Light</option>
+          </select>
+        </div>
+        <div class="prefs-section">
+          <div class="prefs-section-label">Density</div>
+          <div class="prefs-seg" role="group" aria-label="Density">
+            <button type="button" class="prefs-seg-btn" data-pref-density="compact">Compact</button>
+            <button type="button" class="prefs-seg-btn" data-pref-density="comfortable">Comfortable</button>
+          </div>
+          <select id="prefDensity" class="sr-only" aria-hidden="true" tabindex="-1">
+            <option value="compact">Compact</option><option value="comfortable">Comfortable</option>
+          </select>
+        </div>
+        <label class="prefs-row">Text size <select id="prefFont">
+          <option value="sm">Small</option>
+          <option value="md">Medium</option>
+          <option value="lg">Large</option>
+        </select></label>
+      </div>
+    </div>
   </div>
   <div class="user-badge" id="userBadge" style="display:none;"></div>
 </header>
 
 <main>
-
-  <div class="nav-tabs" id="navTabs">
-    <button type="button" class="active" data-nav="dashboards">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="3" width="8" height="5" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="10" width="8" height="11" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="13" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.8"/></svg>
-      Metrics
-    </button>
-    <button type="button" data-nav="problems">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      Problems
-    </button>
-  </div>
 
   <div id="dashboardsView"></div>
   <div id="problemsView" style="display:none"></div>
@@ -80,12 +112,12 @@
   Zero-build: no bundler required. FastAPI serves these as static files.
   Order: core → utils (shared helpers) → ui → dashboards → problems (boot).
 -->
-<script src="/js/core.js?v=5.0.0n"></script>
+<script src="/js/core.js?v=5.1.4qv"></script>
 <script src="/js/export.js?v=5.0.0n"></script>
-<script src="/js/utils.js?v=5.0.0n"></script>
-<script src="/js/ui.js?v=5.0.0n"></script>
-<script src="/js/dashboards.js?v=5.0.0n"></script>
-<script src="/js/problems.js?v=5.0.0n"></script>
+<script src="/js/utils.js?v=5.0.0u"></script>
+<script src="/js/ui.js?v=5.1.4qv"></script>
+<script src="/js/dashboards.js?v=5.1.7mult"></script>
+<script src="/js/problems.js?v=5.1.4err"></script>
 
 </body>
 </html>

@@ -61,17 +61,59 @@ function renderUserBadge(){
     return;
   }
   el.style.display = '';
+  const uname = currentUser.username || currentUser.alias || '';
+  const initial = (uname.trim().charAt(0) || '?').toUpperCase();
   el.innerHTML =
-    '<span class="ub-name"></span>'+
-    '<span class="ub-role"></span>'+
-    '<button type="button" id="logoutBtn">Log out</button>';
-  el.querySelector('.ub-name').textContent = currentUser.username || currentUser.alias || '';
-  el.querySelector('.ub-name').title = currentUser.username || '';
+    '<span class="ub-avatar" aria-hidden="true"></span>'+
+    '<span class="ub-meta">'+
+      '<span class="ub-name"></span>'+
+      '<span class="ub-role"></span>'+
+    '</span>'+
+    '<button type="button" id="logoutBtn" title="Log out">Log out</button>';
+  el.querySelector('.ub-avatar').textContent = initial;
+  el.querySelector('.ub-name').textContent = uname;
+  el.querySelector('.ub-name').title = uname;
   el.querySelector('.ub-role').textContent = currentUser.role_label || '';
   const btn = document.getElementById('logoutBtn');
   if(btn) btn.addEventListener('click', doLogout);
   if(typeof updateHealthButtonState === 'function') updateHealthButtonState();
 }
+
+/** Turn FastAPI / backend error payloads into a readable string. */
+function formatApiDetail(detail, fallback){
+  if(detail == null || detail === '') return fallback || 'Request failed';
+  if(typeof detail === 'string'){
+    if(detail === '[object Object]') return fallback || 'Request failed';
+    return detail;
+  }
+  if(typeof detail === 'object'){
+    if(detail instanceof Error) return detail.message || (fallback || 'Request failed');
+    if(detail.message && typeof detail.message === 'string') return detail.message;
+    if(detail.error && typeof detail.error === 'string') return detail.error;
+    if(detail.detail != null && detail.detail !== detail){
+      return formatApiDetail(detail.detail, fallback);
+    }
+    if(Array.isArray(detail)){
+      const parts = detail.map(function(d){
+        if(typeof d === 'string') return d;
+        if(d && d.msg){
+          const loc = Array.isArray(d.loc) ? d.loc.filter(function(x){ return x !== 'body'; }).join('.') : '';
+          return (loc ? loc + ': ' : '') + d.msg;
+        }
+        try{ return JSON.stringify(d); }catch(e){ return ''; }
+      }).filter(Boolean);
+      return parts.length ? parts.join('; ') : (fallback || 'Request failed');
+    }
+    try{
+      const s = JSON.stringify(detail);
+      if(s && s !== '{}' && s !== 'null') return s;
+    }catch(e){}
+    return fallback || 'Request failed';
+  }
+  const s = String(detail);
+  return (s && s !== '[object Object]') ? s : (fallback || 'Request failed');
+}
+
 
 async function doLogout(){
   try{ await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin', headers: apiHeaders() }); }catch(e){ console.warn(e); }
@@ -172,11 +214,10 @@ function tzLabel(){
 }
 
 function updateTzLabels(){
-  const lab = tzLabel();
   const fl = document.getElementById('fromLabel');
   const tl = document.getElementById('toLabel');
-  if(fl) fl.textContent = 'From (' + lab + ')';
-  if(tl) tl.textContent = 'To (' + lab + ')';
+  if(fl) fl.textContent = 'From';
+  if(tl) tl.textContent = 'To';
 }
 
 function toEpoch(datetimeLocal){
@@ -220,33 +261,116 @@ function fmtTimeShort(clock){
 
 
 
-(function pulse(){
+/** Rolling DB latency samples (ms) for the header sparkline. */
+const _pulseSamples = [];
+const PULSE_MAX = 48;
+const PULSE_POLL_MS = 1000; // live poll every 1s
+let _pulseTimer = null;
+let _pulseInFlight = false;
+
+function pushPulseSample(ms){
+  if(typeof ms !== 'number' || !isFinite(ms) || ms < 0) return;
+  _pulseSamples.push(ms);
+  while(_pulseSamples.length > PULSE_MAX) _pulseSamples.shift();
+  drawPulse();
+  const wrap = document.getElementById('pulseWrap');
+  if(wrap){
+    const last = _pulseSamples[_pulseSamples.length - 1];
+    const avg = _pulseSamples.reduce(function(a,b){ return a+b; }, 0) / _pulseSamples.length;
+    const fmt = function(v){ return v < 10 ? v.toFixed(1) : String(Math.round(v)); };
+    wrap.title = 'DB latency — last ' + fmt(last) + ' ms · avg ' + fmt(avg) + ' ms';
+  }
+}
+
+function drawPulse(){
   const canvas = document.getElementById('pulse');
+  if(!canvas) return;
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
-  const points = new Array(60).fill(H/2);
-  function step(){
-    points.shift();
-    const last = points[points.length-1];
-    let next = last + (Math.random()-0.5)*6;
-    if(Math.random() < 0.04) next += (Math.random()>0.5?1:-1)*10;
-    next = Math.max(4, Math.min(H-4, next*0.7 + (H/2)*0.3));
-    points.push(next);
-    ctx.clearRect(0,0,W,H);
+  ctx.clearRect(0, 0, W, H);
+  if(!_pulseSamples.length){
+    // flat baseline until first sample
     ctx.beginPath();
     ctx.strokeStyle = '#E8A33D';
-    ctx.globalAlpha = .8;
-    ctx.lineWidth = 1.4;
-    points.forEach((y,i) => {
-      const x = i*(W/(points.length-1));
-      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-    });
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = 1.2;
+    ctx.moveTo(0, H/2);
+    ctx.lineTo(W, H/2);
     ctx.stroke();
     ctx.globalAlpha = 1;
+    return;
   }
-  step();
-  setInterval(step, 220);
-})();
+  const samples = _pulseSamples.slice();
+  while(samples.length < PULSE_MAX) samples.unshift(samples[0]);
+  const max = Math.max(1, Math.max.apply(null, samples));
+  const min = Math.min.apply(null, samples);
+  const span = Math.max(max - min, max * 0.15, 1);
+  ctx.beginPath();
+  ctx.strokeStyle = '#E8A33D';
+  ctx.globalAlpha = 0.85;
+  ctx.lineWidth = 1.4;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  samples.forEach(function(v, i){
+    const x = i * (W / (samples.length - 1 || 1));
+    const y = H - 3 - ((v - min) / span) * (H - 6);
+    if(i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+/** Lightweight live sample of /api/health for the sparkline only. */
+async function pollPulseOnce(){
+  if(_pulseInFlight) return;
+  _pulseInFlight = true;
+  try{
+    const t0 = performance.now();
+    const res = await fetch('/api/health', { cache: 'no-store' });
+    const clientMs = performance.now() - t0;
+    if(res.ok){
+      const data = await res.json();
+      // Prefer server-measured DB latency; fall back to round-trip time
+      const ms = (typeof data.latency_ms === 'number') ? data.latency_ms : clientMs;
+      pushPulseSample(ms);
+      // Keep status dot in sync without waiting for the slower full check
+      _lastHealth = data;
+      const dot = document.getElementById('liveDot');
+      const label = document.getElementById('liveLabel');
+      if(dot) dot.className = 'live-dot ok' + (dot.classList.contains('is-btn') ? ' is-btn' : '');
+      if(label) label.textContent = 'live';
+    } else {
+      // Still record client RTT so the line moves; mark status bad
+      pushPulseSample(clientMs);
+      const dot = document.getElementById('liveDot');
+      const label = document.getElementById('liveLabel');
+      if(dot) dot.className = 'live-dot bad' + (dot.classList.contains('is-btn') ? ' is-btn' : '');
+      if(label) label.textContent = 'DB unreachable';
+    }
+  }catch(e){
+    // Network error — don't invent samples
+  }finally{
+    _pulseInFlight = false;
+  }
+}
+
+function startPulsePolling(){
+  if(_pulseTimer) return;
+  drawPulse();
+  pollPulseOnce();
+  _pulseTimer = setInterval(pollPulseOnce, PULSE_POLL_MS);
+}
+
+function stopPulsePolling(){
+  if(_pulseTimer){ clearInterval(_pulseTimer); _pulseTimer = null; }
+}
+
+// Start as soon as this module loads (header canvas is already in the DOM)
+if(document.getElementById('pulse')){
+  startPulsePolling();
+} else {
+  document.addEventListener('DOMContentLoaded', startPulsePolling);
+}
 
 let _lastHealth = null;
 let _healthModal = null;
@@ -297,13 +421,17 @@ function renderHealthModalBody(){
     return;
   }
   const c = d.connection || {};
+  const eng = (c.engine || d.engine || '').toLowerCase();
+  let engLabel = 'DB server';
+  if(eng === 'postgresql' || eng === 'postgres') engLabel = 'PostgreSQL';
+  else if(eng === 'mysql') engLabel = 'MySQL';
   const rows = [
     ['Status', d.db === 'reachable' ? 'Connected' : (d.status || 'OK')],
     ['Latency', (d.latency_ms != null ? d.latency_ms + ' ms' : '—')],
     ['Host', (c.host || '—') + (c.port != null ? ':' + c.port : '')],
     ['Database', c.database || '—'],
     ['User', c.user || '—'],
-    ['MySQL', d.server_version || '—'],
+    [engLabel, d.server_version || '—'],
     ['App', d.version ? ('v' + d.version) : '—'],
     ['Open problems', d.problem_open != null ? String(d.problem_open) : '—'],
     ['Monitored hosts', d.hosts_monitored != null ? String(d.hosts_monitored) : '—'],
@@ -354,7 +482,8 @@ async function checkHealth(){
       const data = await res.json();
       _lastHealth = data;
       if(dot) dot.className = 'live-dot ok';
-      if(label) label.textContent = 'DB connected';
+      if(label) label.textContent = 'live';
+      if(typeof data.latency_ms === 'number') pushPulseSample(data.latency_ms);
       updateHealthButtonState();
     } else {
       let errMsg = 'DB unreachable';

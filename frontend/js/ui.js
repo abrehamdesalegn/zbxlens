@@ -8,7 +8,14 @@ const ICON_SUN = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><c
 const ICON_MOON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M20 14.5A8.5 8.5 0 019.5 4a8.5 8.5 0 1010.5 10.5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
 
 function escHtml(s){
-  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+  if(s == null) return '';
+  if(typeof s === 'object'){
+    try{
+      if(typeof formatApiDetail === 'function') s = formatApiDetail(s, '');
+      else s = JSON.stringify(s);
+    }catch(e){ s = String(s); }
+  }
+  return String(s).replace(/[&<>"']/g, function(c){
     return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
   });
 }
@@ -223,11 +230,16 @@ function getRecents(kind){
 function recentStripHtml(kind, items, existingIds){
   const valid = items.filter(function(r){ return existingIds.has(r.id); });
   if(!valid.length) return '';
-  return '<div class="recent-strip">'+valid.map(function(r){
-    return '<button type="button" class="recent-chip" data-recent-id="'+r.id+'">'+
-      '<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M12 7v5l3.5 2M21 12a9 9 0 11-9-9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
-      escHtml(r.name||'Untitled')+'</button>';
-  }).join('')+'</div>';
+  // Hide when it only duplicates a single-card list (feels redundant)
+  if(valid.length === 1 && existingIds.size <= 1) return '';
+  return '<div class="recent-strip">'+
+    '<span class="recent-label">Recent</span>'+
+    valid.map(function(r){
+      return '<button type="button" class="recent-chip" data-recent-id="'+r.id+'">'+
+        '<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M12 7v5l3.5 2M21 12a9 9 0 11-9-9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
+        escHtml(r.name||'Untitled')+'</button>';
+    }).join('')+
+  '</div>';
 }
 
 // ---------- Pins (server-side, per user — see /api/pins) ----------
@@ -686,40 +698,47 @@ async function openPivotCellDrilldown(opts){
 // ---------- Period-over-period delta ----------
 function deltaBadgeHtml(current, previous, goodWhenDown){
   if(typeof current !== 'number' || typeof previous !== 'number') return '';
-  if(previous === 0){
-    // Avoid divide-by-zero; still show direction if current moved
-    if(current === 0) return '';
-    const dir0 = current > 0 ? 'up' : 'down';
-    const base0 = goodWhenDown ? 'delta' : 'delta-good';
-    return '<span class="'+base0+' '+dir0+'">'+(dir0==='up'?'▲':'▼')+'</span>';
+  // Absolute point change (not relative %), so small shifts don't look dramatic
+  const diff = current - previous;
+  if(!isFinite(diff)) return '';
+  // Threshold in absolute units (0.05 points) — ignore noise
+  if(Math.abs(diff) < 0.05){
+    return '<span class="delta flat">· 0</span>';
   }
-  const pct = ((current - previous) / Math.abs(previous)) * 100;
-  if(!isFinite(pct)) return '';
-  const dir = pct > 0.5 ? 'up' : (pct < -0.5 ? 'down' : 'flat');
+  const dir = diff > 0 ? 'up' : 'down';
   // goodWhenDown=true  (CPU, latency): increase is bad → .delta (up red / down green)
   // goodWhenDown=false (availability):  increase is good → .delta-good (up green / down red)
   const base = goodWhenDown ? 'delta' : 'delta-good';
   const cls = base + ' ' + dir;
-  const arrow = dir === 'up' ? '▲' : (dir === 'down' ? '▼' : '·');
-  return '<span class="'+cls+'">'+arrow+' '+Math.abs(pct).toFixed(0)+'%</span>';
+  const arrow = dir === 'up' ? '▲' : '▼';
+  const abs = Math.abs(diff);
+  // Prefer 1 decimal for small moves, integer for large
+  const text = abs >= 10 ? abs.toFixed(0) : abs.toFixed(1);
+  const sign = dir === 'up' ? '+' : '−';
+  return '<span class="'+cls+'" title="Absolute change vs previous period">'+arrow+' '+sign+text+'</span>';
 }
 
 // ---------- Problems: severity summary, diagnostics, new-problem tracking ----------
 const SEV_LABELS = {0:'Not classified',1:'Information',2:'Warning',3:'Average',4:'High',5:'Disaster'};
 function computeSeverityChips(problems){
-  if(!problems.length) return '';
-  const counts = {};
-  problems.forEach(function(p){
+  const counts = { 0:0, 1:0, 2:0, 3:0, 4:0, 5:0 };
+  (problems || []).forEach(function(p){
     const sev = parseInt(p.severity, 10) || 0;
-    counts[sev] = (counts[sev]||0) + 1;
+    if(counts[sev] != null) counts[sev]++;
+    else counts[sev] = 1;
   });
-  const order = [5,4,3,2,1,0];
-  const chips = order.filter(function(s){ return counts[s]; }).map(function(s){
-    const tone = s >= 4 ? 'bad' : (s >= 2 ? 'warn' : 'ok');
-    return '<span class="insight-chip '+tone+'" data-sev="'+s+'" title="Click to filter"><b>'+counts[s]+'</b> '+(SEV_LABELS[s]||'Sev '+s)+'</span>';
+  const order = [5, 4, 3, 2, 1, 0];
+  // Full spectrum as the only header counters (no separate "N open problems" text)
+  const chips = order.map(function(s){
+    const n = counts[s] || 0;
+    const label = SEV_LABELS[s] || ('Sev '+s);
+    const tone = n === 0 ? 'muted' : (s >= 4 ? 'bad' : (s >= 2 ? 'warn' : 'ok'));
+    return '<span class="insight-chip '+tone+(n?'':' is-zero')+'" data-sev="'+s+'" title="'+(n?'Click to filter by '+label:'No '+label+' problems')+'">'+
+      label+': <b>'+(n||'0')+'</b></span>';
   });
-  return '<div class="insight-strip">'+chips.join('')+
-    '<span class="insight-chip" style="opacity:.7">'+problems.length+' total</span></div>';
+  const total = (problems || []).length;
+  chips.push('<span class="insight-chip total-chip" title="Total matched problems">Total: <b>'+total+'</b></span>');
+  return '<div class="insight-strip sev-counter-strip" role="group" aria-label="Severity counts">'+chips.join('')+'</div>';
 }
 
 const DIAG_LABELS = {

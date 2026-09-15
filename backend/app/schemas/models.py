@@ -56,7 +56,7 @@ class DashboardColumn(BaseModel):
     unit: str | None = None
     decimals: int = 1
     # Legacy highlight mode (still accepted for old saved dashboards)
-    color_mode: Literal["none", "bad_high", "good_high"] = "none"
+    color_mode: Literal["none", "bad_high", "good_high", "threshold"] = "none"
     # Cell rendering: plain number, intensity bar, or both
     display: Literal["number", "bar", "number_bar", "graph", "number_graph"] = "number"
     # Configurable thresholds: mode off | high_bad | high_good
@@ -86,6 +86,9 @@ class DashboardColumn(BaseModel):
         disp = data.get("display")
         if disp not in ("number", "bar", "number_bar", "graph", "number_graph"):
             data = {**data, "display": "number"}
+        cm = data.get("color_mode")
+        if cm not in ("none", "bad_high", "good_high", "threshold"):
+            data = {**data, "color_mode": "none"}
         return data
 
 

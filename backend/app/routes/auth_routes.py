@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 from typing import Literal
 
-import pymysql
 from fastapi import APIRouter, HTTPException, Request, Query, Response
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response as FastResponse
 from pydantic import BaseModel, Field
@@ -27,6 +26,7 @@ from ..services.export import (
 from ..services import metrics as zr_metrics
 from ..schemas.models import *
 from . import common
+from ..db import db_operational_errors, DbError
 from .common import (
     _cookie_kwargs, _user_out, _session_token,
     _require_group_permission, _run, _annotate, _visible_list,

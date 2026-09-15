@@ -87,26 +87,57 @@ def dashboard_to_xlsx(dashboard: dict, result: dict) -> bytes:
     return buf.getvalue()
 
 
+def _format_age(seconds) -> str:
+    """Human-readable age, e.g. 3d 5h, 59d 3h, 49m."""
+    try:
+        s = int(seconds or 0)
+    except (TypeError, ValueError):
+        return ""
+    if s < 0:
+        s = 0
+    days, rem = divmod(s, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, _ = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours or days:
+        parts.append(f"{hours}h")
+    if not days:
+        parts.append(f"{mins}m")
+    return " ".join(parts) if parts else "0m"
+
+
 def _problems_to_dataframe(problems: list[dict]):
+    """
+    Columns (snake_case):
+      host, severity, problem, status, acknowledged, since, age
+    `since` is wall time in UTC+3.
+    """
+    from datetime import timedelta
+    tz_plus3 = timezone(timedelta(hours=3))
     rows = []
     for p in problems or []:
+        is_acked = int(p.get("acknowledged") or 0) == 1 or (
+            str(p.get("ack_status") or "").lower().startswith("ack")
+            and "unack" not in str(p.get("ack_status") or "").lower()
+        )
+        age_sec = p.get("age_seconds")
+        problem_text = (p.get("problem_name") or p.get("trigger_name") or "").strip()
+        since = ""
+        if p.get("clock"):
+            since = datetime.fromtimestamp(int(p["clock"]), tz=tz_plus3).strftime("%Y-%m-%d %H:%M:%S")
         rows.append({
-            "severity": p.get("severity_label") or p.get("severity"),
-            "severity_code": p.get("severity"),
-            "status": p.get("problem_status") or ("Open" if p.get("r_eventid") is None else "Closed"),
-            "acknowledged": p.get("ack_status") or ("Acknowledged" if int(p.get("acknowledged") or 0) == 1 else "Unacknowledged"),
             "host": p.get("host_name") or p.get("host") or "",
-            "problem": p.get("problem_name") or p.get("trigger_name") or "",
-            "trigger": p.get("trigger_name") or "",
-            "eventid": p.get("eventid"),
-            "triggerid": p.get("triggerid"),
-            "since_utc": (
-                datetime.fromtimestamp(int(p["clock"]), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                if p.get("clock") else ""
-            ),
-            "age_seconds": p.get("age_seconds"),
+            "severity": p.get("severity_label") or p.get("severity") or "",
+            "problem": problem_text,
+            "status": p.get("problem_status") or ("Open" if p.get("r_eventid") is None else "Closed"),
+            "acknowledged": "ACK" if is_acked else "UNACK",
+            "since": since,
+            "age": _format_age(age_sec),
         })
-    return pd.DataFrame(rows)
+    cols = ["host", "severity", "problem", "status", "acknowledged", "since", "age"]
+    return pd.DataFrame(rows, columns=cols)
 
 
 def problems_to_csv(problems: list[dict]) -> bytes:
